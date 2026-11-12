@@ -33,3 +33,15 @@ nse:
     - 2025-02-01
     - 2026-02-01
   try_weekends_after: 2026-08-28
+
+backup:
+  # Everything that cannot be rebuilt from code. The parquet store is rebuilt by `nsebt build`.
+  include:
+    - data/nse/raw
+    - data/nse/reference
+    - dataextracted/DE/data          # the Bloomberg extract (irreplaceable)
+    - journal                        # trade journal (Phase 7)
+    - bbg_overrides.csv
+    - config.yaml
+    - reports/runs                   # daily update reports
+  destinations: []                   # e.g. /run/media/<you>/drive or a Google Drive folder

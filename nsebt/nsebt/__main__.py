@@ -1,13 +1,22 @@
-"""Command line entry point: python -m nsebt <command> ...
+"""nsebt: NSE research and backtesting platform.
 
-  update     download NSE bhavcopy files and add them to the store
-  ingest     add bhavcopy CSVs you downloaded yourself
-  map        map Bloomberg IDs to NSE symbols and check prices where the sources overlap
-  backtest   run a strategy on the combined data
-  signals    show what a strategy says to hold/buy as of the latest data
-  audit      audit the Bloomberg extract (DE folder) and write CSV evidence
-  backfill   download NSE bhavcopy + delivery files for a date range (polite, resumable)
-  build      build the store, Bloomberg mapping, CA reconciliation and membership
+Data
+  update     daily: fetch new NSE files, rebuild the store, write a run report
+  backfill   download NSE files for a date range (polite, resumable)
+  ingest     add NSE files you downloaded yourself in a browser
+  build      rebuild the store, Bloomberg mapping and membership from the raw files
+  audit      audit the Bloomberg extract (Phase 0)
+
+Safety
+  backup     copy everything that cannot be rebuilt to a backup folder (checksummed)
+  restore    verify a backup and restore missing or changed files
+  doctor     check the environment, config, data, store and (optionally) a backup
+
+Research (legacy: runs on the Bloomberg extract until the Phase 5 engine)
+  backtest   run a strategy
+  signals    what a strategy says as of the latest data
+
+All commands read config.yaml from the current folder or a parent.
 """
 from __future__ import annotations
 
@@ -16,132 +25,73 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
-
-from . import bloomberg, mapping, panel, store
-from .engine import portfolio, trades
-from .strategies import REGISTRY
-from .universe import Universe
-
-D = Path("data")
-
 
 def _date(s):
     return date.fromisoformat(s)
 
 
-def _load(args, need_nse=True):
-    bbg = bloomberg.load_prices(args.de_data)
-    uni = Universe(bloomberg.load_membership(args.de_data))
-    if need_nse and Path(args.store).exists() and Path(args.mapping).exists():
-        nse = store.load(args.store)
-        mp = pd.read_csv(args.mapping)
-        trusted = None
-        val = Path(args.mapping).with_name("mapping_validation.csv")
-        if val.exists():
-            v = pd.read_csv(val)
-            trusted = set(v.loc[v["Status"] == "ok", "Bloomberg_ID"])
-            if not trusted:
-                print("no mapping is validated yet: download a few days that overlap the "
-                      "Bloomberg data (update --start 2026-08-20), then rerun map")
-        data = panel.combine(bbg, nse, mp, trusted=trusted)
-        ext = sum(1 for k in data if len(data[k]) > len(bbg.get(k, [])))
-        print(f"loaded {len(bbg)} Bloomberg series; extended {ext} with NSE data"
-              f"{' (validated matches only)' if trusted is not None else ''}")
-    else:
-        data = bbg
-        print(f"loaded {len(bbg)} Bloomberg series (no NSE extension: run update + map first)")
-    return data, uni
+def _cfg(a):
+    from . import config
+    return config.load(a.config)
 
+
+def _log(cfg, name):
+    from . import nsefetch
+    nsefetch.setup_logging(cfg.path("logs") / f"{name}_{nsefetch.stamp()}.log")
+
+
+# --------------------------------------------------------------------------- data
 
 def cmd_update(a):
-    rep = store.update(a.raw, a.store, start=a.start, end=a.end, pause=a.pause)
-    print(rep)
-    print(f"store now ends {store.last_date(a.store)}")
+    from . import update
+    cfg = _cfg(a)
+    _log(cfg, "update")
+    rep = update.run(cfg, start=a.start, end=a.end, build=not a.no_build)
+    print(update.one_line(rep))
+    if rep["failed"] or rep.get("stopped"):
+        sys.exit(1)
+
+
+def cmd_backfill(a):
+    from . import nsefetch
+    cfg = _cfg(a)
+    _log(cfg, "backfill")
+    start = a.start or cfg.backfill_start
+    end = a.end or date.today()
+    cli = nsefetch.NSEClient(cfg.path("nse_raw"), cfg.politeness)
+    if not a.skip_reference:
+        ref = cli.fetch_reference(cfg.path("nse_reference"))
+        print("reference files:", ", ".join(p.name for p in ref.values()))
+    try:
+        res = cli.fetch_range(start, end, sources=tuple(a.sources.split(",")), extra_dates=cfg.extra_dates(end))
+    except nsefetch.GiveUp as e:
+        sys.exit(f"stopped: {e}\nEverything fetched so far is cached; rerun the same command later to resume.")
+    print(res.summary())
+    for s, d, e in res.failed[:20]:
+        print(f"  failed {s} {d}: {e}")
 
 
 def cmd_ingest(a):
-    n = store.ingest_files(a.files, a.store)
-    print(f"ingested {n} file(s); store now ends {store.last_date(a.store)}")
+    from . import nsefetch
+    cfg = _cfg(a)
+    res = nsefetch.ingest(a.files, cfg.path("nse_raw"))
+    for name, r in res:
+        print(f"  {name}: {r}")
+    added = sum(r == "added" for _, r in res)
+    print(f"{added} file(s) added" + ("; run `nsebt build` to update the store" if added else ""))
 
 
-def cmd_map(a):
-    bbg = bloomberg.load_prices(a.de_data)
-    nse = store.load(a.store)
-    if nse.empty:
-        sys.exit("NSE store is empty: run update or ingest first.")
-    ids = set(bbg) | set(bloomberg.load_membership(a.de_data)["Bloomberg_ID"])
-    mp = mapping.build(ids, nse["Symbol"].unique(), a.overrides, a.bbg_isin, a.nse_list)
-    Path(a.mapping).parent.mkdir(parents=True, exist_ok=True)
-    mp.to_csv(a.mapping, index=False)
-    val = mapping.validate_overlap(mp, bbg, nse)
-    vpath = Path(a.mapping).with_name("mapping_validation.csv")
-    val.to_csv(vpath, index=False)
-    cur = set(bloomberg.load_membership(a.de_data).query("Date == Date.max()")["Bloomberg_ID"])
-    print(mp["Method"].value_counts().to_string())
-    print("\nvalidation:\n" + val["Status"].value_counts().to_string())
-    um = sorted(set(mp.loc[mp["NSE_Symbol"].isna(), "Bloomberg_ID"]) & cur)
-    print(f"\ncurrent Nifty 500 members still unmapped: {len(um)}")
-    if um:
-        p = Path(a.mapping).with_name("unmapped_current_members.csv")
-        pd.DataFrame({"Bloomberg_ID": um, "NSE_Symbol": ""}).to_csv(p, index=False)
-        print(f"  listed in {p}; fill NSE_Symbol and pass it as --overrides")
-    print(f"\nwrote {a.mapping} and {vpath}")
-
-
-def _strategy(a):
-    cls = REGISTRY[a.strategy]
-    return cls()
-
-
-def cmd_backtest(a):
-    data, uni = _load(a)
-    strat = _strategy(a)
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    pd.set_option("display.width", 160)
-    if strat.kind == "trades":
-        cfg = trades.TradeConfig(cost=a.cost if a.cost is not None else trades.TradeConfig.cost)
-        T = trades.run(data, strat, cfg, universe=None if a.all_stocks else uni)
-        P = trades.placebo(data, T, cfg)
-        T.to_csv(out / f"{strat.name}_trades.csv", index=False)
-        print(trades.summarize(T, P).round(4).to_string())
-    else:
-        cfg = portfolio.PortfolioConfig(top_n=a.top_n,
-                                        cost_per_side=a.cost if a.cost is not None
-                                        else portfolio.PortfolioConfig.cost_per_side)
-        res = portfolio.run(data, strat, cfg, universe=None if a.all_stocks else uni)
-        res["daily"].to_csv(out / f"{strat.name}_daily.csv")
-        print(portfolio.stats(res["daily"], cfg.split).round(4).to_string())
-        print(f"\ndays with open-to-open moves > {cfg.ca_filter:.0%} zeroed as corporate actions: {res['ca_hits']}")
-    print(f"\nresults in {out}")
-
-
-def cmd_signals(a):
-    data, uni = _load(a)
-    strat = _strategy(a)
-    last = max(d.index.max() for d in data.values())
-    members = uni.members_on(last)
-    print(f"latest data: {last.date()}  (members as of latest snapshot: {len(members)})")
-    stale = [t for t in members if t in data and data[t].index.max() < last]
-    if stale:
-        print(f"warning: {len(stale)} members have no data on {last.date()} (unmapped or not traded)")
-    if strat.kind == "portfolio":
-        C, V = panel.matrix(data, "Close"), panel.matrix(data, "Volume")
-        s = strat.scores(C, V).iloc[-1]
-        s = s[s.index.isin(members)].dropna().sort_values(ascending=False).head(a.top_n)
-        print(f"\ntop {a.top_n} by {strat.name} score:")
-        print(s.round(4).to_string())
-    else:
-        hits = []
-        for t in members:
-            if t in data and data[t].index.max() == last and len(data[t]) > 60:
-                sig = strat.signals(data[t])
-                if bool(sig["entry"].iloc[-1]):
-                    hits.append(t)
-        print(f"\n{strat.name} entry signals on {last.date()} (buy at next open): {len(hits)}")
-        for t in sorted(hits):
-            print(" ", t)
+def cmd_build(a):
+    from . import pipeline
+    cfg = _cfg(a)
+    _log(cfg, "build")
+    rep = pipeline.run(cfg, skip_store=a.skip_store)
+    s = rep.get("store", {})
+    if s:
+        print(f"store: {s['rows']:,} rows, {s['securities']} securities ({s['active_securities']} active), "
+              f"{s['first_date']} to {s['last_date']}, {s['corporate_actions']} corporate actions")
+    print("mapping:", rep["mapping"]["by_status"])
+    print(f"done in {rep['seconds']}s; details in reports/phase1/")
 
 
 def cmd_audit(a):
@@ -152,73 +102,134 @@ def cmd_audit(a):
           f"{p['big_moves']} moves over 20% ({p['big_move_labels']})")
 
 
-def cmd_backfill(a):
-    from . import config, nsefetch
-    cfg = config.load(a.config)
-    nsefetch.setup_logging(cfg.path("logs") / f"backfill_{nsefetch.stamp()}.log")
-    start = a.start or cfg.backfill_start
-    end = a.end or date.today()
-    cli = nsefetch.NSEClient(cfg.path("nse_raw"), cfg.politeness)
-    if not a.skip_reference:
-        ref = cli.fetch_reference(cfg.path("nse_reference"))
-        print("reference files:", ", ".join(p.name for p in ref.values()))
-    sources = tuple(a.sources.split(","))
-    try:
-        res = cli.fetch_range(start, end, sources=sources, extra_dates=cfg.extra_dates(end))
-    except nsefetch.GiveUp as e:
-        sys.exit(f"stopped: {e}\nEverything fetched so far is cached; rerun the same command later to resume.")
-    print(res.summary())
-    for s, d, e in res.failed[:20]:
-        print(f"  failed {s} {d}: {e}")
+# --------------------------------------------------------------------------- safety
+
+def cmd_backup(a):
+    from . import maintenance
+    cfg = _cfg(a)
+    dests = [a.dest] if a.dest else [Path(d) for d in cfg.raw.get("backup", {}).get("destinations", [])]
+    if not dests:
+        sys.exit("no destination: pass --dest or set backup.destinations in config.yaml")
+    bad = False
+    for d in dests:
+        if not Path(d).exists():
+            print(f"  {d}: not available (drive not mounted?) - skipped")
+            bad = True
+            continue
+        r = maintenance.backup(cfg, Path(d))
+        print(f"  {r['dest']}: {r['files']} files ({r['bytes'] / 1e6:.0f} MB), {r['copied']} copied, "
+              f"git bundle {'ok' if r['git_bundle'] else 'FAILED ' + r['git_error']}")
+    sys.exit(1 if bad else 0)
 
 
-def cmd_build(a):
-    from . import config, nsefetch, pipeline
-    cfg = config.load(a.config)
-    nsefetch.setup_logging(cfg.path("logs") / f"build_{nsefetch.stamp()}.log")
-    rep = pipeline.run(cfg, skip_store=a.skip_store)
-    s = rep.get("store", {})
-    if s:
-        print(f"store: {s['rows']:,} rows, {s['securities']} securities ({s['active_securities']} active), "
-              f"{s['first_date']} to {s['last_date']}, {s['corporate_actions']} corporate actions")
-    print("mapping:", rep["mapping"]["by_status"])
-    print(f"done in {rep['seconds']}s; details in reports/phase1/")
+def cmd_restore(a):
+    from . import config, maintenance
+    root = config.find().parent if not a.to else Path(a.to)
+    r = maintenance.restore(root, a.src, apply=a.apply)
+    v = r["verified"]
+    print(f"backup {v['root']} from {v['created']}: {v['files']} files, "
+          f"{'verified' if v['ok'] else 'FAILED verification'} (missing {len(v['missing'])}, corrupt {len(v['corrupt'])})")
+    if "to_restore" in r:
+        print(f"{r['to_restore']} file(s) {'restored' if r['applied'] else 'would be restored (add --apply)'}")
+    if v["git_bundle"]:
+        print(f"code: git clone {v['root']}/repo.bundle <folder>   (if you have no GitHub access)")
 
+
+def cmd_doctor(a):
+    from . import maintenance
+    cfg = _cfg(a)
+    rows = maintenance.doctor(cfg, a.backup, a.tests)
+    w = max(len(r[0]) for r in rows)
+    for name, status, detail in rows:
+        print(f"  {status:4}  {name:<{w}}  {detail}")
+    fails = sum(r[1] == "FAIL" for r in rows)
+    print(f"{fails} problem(s)" if fails else "all checks passed")
+    sys.exit(1 if fails else 0)
+
+
+# --------------------------------------------------------------------------- research (legacy)
+
+def _legacy_load(a):
+    from . import bloomberg
+    from .universe import Universe
+    cfg = _cfg(a)
+    de = cfg.path("bloomberg_root") / "data"
+    print("note: legacy path on Bloomberg prices; the Phase 5 engine moves this to the NSE store")
+    return bloomberg.load_prices(de), Universe(bloomberg.load_membership(de))
+
+
+def cmd_backtest(a):
+    import pandas as pd
+
+    from .engine import portfolio, trades
+    from .strategies import REGISTRY
+    data, uni = _legacy_load(a)
+    strat = REGISTRY[a.strategy]()
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    pd.set_option("display.width", 160)
+    if strat.kind == "trades":
+        tc = trades.TradeConfig(cost=a.cost if a.cost is not None else trades.TradeConfig.cost)
+        T = trades.run(data, strat, tc, universe=None if a.all_stocks else uni)
+        P = trades.placebo(data, T, tc)
+        T.to_csv(out / f"{strat.name}_trades.csv", index=False)
+        print(trades.summarize(T, P).round(4).to_string())
+    else:
+        pc = portfolio.PortfolioConfig(top_n=a.top_n, cost_per_side=a.cost if a.cost is not None
+                                       else portfolio.PortfolioConfig.cost_per_side)
+        res = portfolio.run(data, strat, pc, universe=None if a.all_stocks else uni)
+        res["daily"].to_csv(out / f"{strat.name}_daily.csv")
+        print(portfolio.stats(res["daily"], pc.split).round(4).to_string())
+    print(f"\nresults in {out}")
+
+
+def cmd_signals(a):
+    from . import panel
+    from .strategies import REGISTRY
+    data, uni = _legacy_load(a)
+    strat = REGISTRY[a.strategy]()
+    last = max(d.index.max() for d in data.values())
+    members = uni.members_on(last)
+    print(f"latest data: {last.date()}  (members: {len(members)})")
+    if strat.kind == "portfolio":
+        s = strat.scores(panel.matrix(data, "Close"), panel.matrix(data, "Volume")).iloc[-1]
+        print(s[s.index.isin(members)].dropna().sort_values(ascending=False).head(a.top_n).round(4).to_string())
+    else:
+        hits = [t for t in members if t in data and data[t].index.max() == last and len(data[t]) > 60
+                and bool(strat.signals(data[t])["entry"].iloc[-1])]
+        print(f"{strat.name} entry signals on {last.date()}: {len(hits)}")
+        for t in sorted(hits):
+            print(" ", t)
+
+
+# --------------------------------------------------------------------------- parser
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="nsebt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--de-data", type=Path, default=D / "DE" / "data", help="Bloomberg DE/data folder")
-    p.add_argument("--raw", type=Path, default=D / "nse" / "raw", help="raw bhavcopy cache")
-    p.add_argument("--store", type=Path, default=D / "nse" / "store", help="parsed NSE store")
-    p.add_argument("--mapping", type=Path, default=D / "mapping.csv")
+    p.add_argument("--config", type=Path, help="config.yaml (default: search this folder and parents)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    u = sub.add_parser("update", help="download bhavcopy files")
-    u.add_argument("--start", type=_date, help="YYYY-MM-DD (default: day after store ends)")
-    u.add_argument("--end", type=_date, help="YYYY-MM-DD (default: today)")
-    u.add_argument("--pause", type=float, default=1.0, help="seconds between downloads")
+    u = sub.add_parser("update", help="daily: fetch new days, rebuild, report")
+    u.add_argument("--start", type=_date, help="default: day after the store's last day")
+    u.add_argument("--end", type=_date, help="default: today")
+    u.add_argument("--no-build", action="store_true", help="download only")
     u.set_defaults(fn=cmd_update)
 
-    g = sub.add_parser("ingest", help="add bhavcopy CSVs you already have")
+    bf = sub.add_parser("backfill", help="download NSE files for a date range")
+    bf.add_argument("--start", type=_date)
+    bf.add_argument("--end", type=_date)
+    bf.add_argument("--sources", default="price,mto", help="comma list: price,mto,indices,sec_full")
+    bf.add_argument("--skip-reference", action="store_true")
+    bf.set_defaults(fn=cmd_backfill)
+
+    g = sub.add_parser("ingest", help="add NSE files downloaded by hand")
     g.add_argument("files", nargs="+", type=Path)
     g.set_defaults(fn=cmd_ingest)
 
-    m = sub.add_parser("map", help="map Bloomberg IDs to NSE symbols and validate")
-    m.add_argument("--overrides", type=Path, help="CSV: Bloomberg_ID,NSE_Symbol")
-    m.add_argument("--bbg-isin", type=Path, help="CSV: Bloomberg_ID,ISIN (from Bloomberg ID_ISIN)")
-    m.add_argument("--nse-list", type=Path, help="NSE EQUITY_L.csv (SYMBOL, ISIN NUMBER)")
-    m.set_defaults(fn=cmd_map)
-
-    for name, fn in (("backtest", cmd_backtest), ("signals", cmd_signals)):
-        b = sub.add_parser(name)
-        b.add_argument("strategy", choices=sorted(REGISTRY))
-        b.add_argument("--top-n", type=int, default=20)
-        b.add_argument("--cost", type=float, help="trades: round trip; portfolio: per side")
-        b.add_argument("--all-stocks", action="store_true",
-                       help="ignore point-in-time Nifty 500 membership")
-        b.add_argument("--out", type=Path, default=Path("results"))
-        b.set_defaults(fn=fn)
+    bd = sub.add_parser("build", help="rebuild store, mapping and membership")
+    bd.add_argument("--skip-store", action="store_true", help="reuse the existing store")
+    bd.set_defaults(fn=cmd_build)
 
     au = sub.add_parser("audit", help="audit the Bloomberg extract")
     au.add_argument("--de-root", type=Path, required=True, help="the DE folder (contains data/)")
@@ -226,18 +237,30 @@ def main(argv=None):
     au.add_argument("--bhavcopy", type=Path, help="a sec_bhavdata_full CSV, to count name matches")
     au.set_defaults(fn=cmd_audit)
 
-    bf = sub.add_parser("backfill", help="download NSE files for a date range")
-    bf.add_argument("--config", type=Path, help="config.yaml (default: search upwards)")
-    bf.add_argument("--start", type=_date)
-    bf.add_argument("--end", type=_date)
-    bf.add_argument("--sources", default="price,mto", help="comma list: price,mto,sec_full")
-    bf.add_argument("--skip-reference", action="store_true")
-    bf.set_defaults(fn=cmd_backfill)
+    b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
+    b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")
+    b.set_defaults(fn=cmd_backup)
 
-    bd = sub.add_parser("build", help="build store, mapping and membership from raw files")
-    bd.add_argument("--config", type=Path)
-    bd.add_argument("--skip-store", action="store_true", help="reuse the existing store")
-    bd.set_defaults(fn=cmd_build)
+    r = sub.add_parser("restore", help="verify a backup and restore from it")
+    r.add_argument("src", type=Path, help="folder containing nsebt-backup/")
+    r.add_argument("--to", type=Path, help="project folder (default: this one)")
+    r.add_argument("--apply", action="store_true", help="actually copy (default: dry run)")
+    r.set_defaults(fn=cmd_restore)
+
+    d = sub.add_parser("doctor", help="health checks")
+    d.add_argument("--backup", type=Path, help="also verify this backup")
+    d.add_argument("--tests", action="store_true", help="also run the test suite")
+    d.set_defaults(fn=cmd_doctor)
+
+    from .strategies import REGISTRY
+    for name, fn in (("backtest", cmd_backtest), ("signals", cmd_signals)):
+        x = sub.add_parser(name, help="(legacy) " + ("run a strategy" if name == "backtest" else "latest signals"))
+        x.add_argument("strategy", choices=sorted(REGISTRY))
+        x.add_argument("--top-n", type=int, default=20)
+        x.add_argument("--cost", type=float, help="trades: round trip; portfolio: per side")
+        x.add_argument("--all-stocks", action="store_true", help="ignore point-in-time membership")
+        x.add_argument("--out", type=Path, default=Path("results"))
+        x.set_defaults(fn=fn)
 
     a = p.parse_args(argv)
     a.fn(a)

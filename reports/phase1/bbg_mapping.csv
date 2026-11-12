@@ -875,7 +875,7 @@ MEESHO IN Equity,INE0VDM01015,name_only,,,,,ok_name_only,MEESHO
 PARADEEP IN Equity,INE088F01024,name_only,,,,,ok_name_only,PARADEEP
 PINELABS IN Equity,INE15B701018,name_only,,,,,ok_name_only,PINELABS
 PIRAMALF IN Equity,INE202B01038,override,,,,,ok_override,PIRAMALFIN
-PRIF IN Equity,,,,,,,no_match,
+PRIF IN Equity,,,,,,,unmapped_by_decision,
 PWL IN Equity,INE0LP301011,name_only,,,,,ok_name_only,PWL
 SANOFICO IN Equity,INE0UOS01011,override,,,,,ok_override,SANOFICONR
 TATACAP IN Equity,INE976I01016,name_only,,,,,ok_name_only,TATACAP

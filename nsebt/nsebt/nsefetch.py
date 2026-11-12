@@ -272,7 +272,53 @@ class NSEClient:
         return out
 
 
-CA_API = "https://www.nseindia.com/api/corporates-corporateActions?index=equities&from_date={a}&to_date={b}"
+def identify(name: str) -> tuple[str, date] | None:
+    """(source, date) for a file name NSE uses, e.g. a file saved from a browser."""
+    import re
+    n = Path(name).name
+    pats = [
+        ("cm_legacy", r"^cm(\d{2})([A-Z]{3})(\d{4})bhav\.csv\.zip$", lambda m: date(int(m[3]), MONTHS.index(m[2]) + 1, int(m[1]))),
+        ("cm_udiff", r"^BhavCopy_NSE_CM_0_0_0_(\d{4})(\d{2})(\d{2})_F_0000\.csv\.zip$", lambda m: date(int(m[1]), int(m[2]), int(m[3]))),
+        ("mto", r"^MTO_(\d{2})(\d{2})(\d{4})\.DAT$", lambda m: date(int(m[3]), int(m[2]), int(m[1]))),
+        ("indices", r"^ind_close_all_(\d{2})(\d{2})(\d{4})\.csv$", lambda m: date(int(m[3]), int(m[2]), int(m[1]))),
+        ("sec_full", r"^sec_bhavdata_full_(\d{2})(\d{2})(\d{4})\.csv$", lambda m: date(int(m[3]), int(m[2]), int(m[1]))),
+    ]
+    for src, pat, mk in pats:
+        m = re.match(pat, n, re.I)
+        if m:
+            return src, mk(m)
+    return None
+
+
+def ingest(paths, raw_dir: Path) -> list[tuple[str, str]]:
+    """Copy manually downloaded NSE files into the raw cache after checking them.
+    Returns (file, result) pairs; result is 'added', 'already present' or an error."""
+    out = []
+    for p in map(Path, paths):
+        idn = identify(p.name)
+        if idn is None:
+            out.append((p.name, "unrecognised file name"))
+            continue
+        src, d = idn
+        try:
+            content = p.read_bytes()
+            check_content(src, content)
+        except Exception as e:  # noqa: BLE001
+            out.append((p.name, f"rejected: {e}"))
+            continue
+        dst = Path(raw_dir) / src / f"{d:%Y}" / url_and_name(src, d)[1]
+        if dst.exists() and dst.read_bytes() == content:
+            out.append((p.name, "already present"))
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".part")
+        tmp.write_bytes(content)
+        tmp.replace(dst)
+        out.append((p.name, "added"))
+    return out
+
+
+CA_API ="https://www.nseindia.com/api/corporates-corporateActions?index=equities&from_date={a}&to_date={b}"
 CA_WARMUP = "https://www.nseindia.com/companies-listing/corporate-filings-actions"
 
 

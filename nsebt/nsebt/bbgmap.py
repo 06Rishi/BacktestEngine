@@ -180,7 +180,10 @@ def apply_overrides(mp: pd.DataFrame, ov: pd.DataFrame, history: pd.DataFrame) -
     automatic matches; a symbol is resolved to the latest security that used it."""
     latest = history.sort_values("last_date").groupby("Symbol")["SecurityID"].last()
     mp = mp.copy()
-    for b, sym in zip(ov["Bloomberg_ID"].str.strip(), ov["NSE_Symbol"].str.strip()):
+    for b, sym in zip(ov["Bloomberg_ID"].str.strip(), ov["NSE_Symbol"].fillna("").str.strip()):
+        if not sym:                                   # deliberately left unmapped
+            mp.loc[mp["Bloomberg_ID"] == b, "status"] = "unmapped_by_decision"
+            continue
         sid = latest.get(sym)
         if sid is None:
             continue
