@@ -1,0 +1,55 @@
+{
+  "overlap_cells": 1774977,
+  "level_within_1pct": 0.8717386197116921,
+  "level_within_5pct": 0.9357033922129695,
+  "return_within_0.2pct": 0.9978013089488079,
+  "close_match_2026-08-26": "0.988 of 774",
+  "close_match_2026-08-27": "0.437 of 774",
+  "reference_events": [
+    {
+      "symbol": "RELIANCE",
+      "ex": "2024-10-28",
+      "raw_move": -0.498,
+      "adj_largest_move": 0.009
+    },
+    {
+      "symbol": "TCS",
+      "ex": "2018-05-31",
+      "raw_move": -0.505,
+      "adj_largest_move": 0.009
+    },
+    {
+      "symbol": "IRCTC",
+      "ex": "2021-10-28",
+      "raw_move": -0.779,
+      "adj_largest_move": 0.106
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "ex": "2025-06-16",
+      "raw_move": -0.899,
+      "adj_largest_move": 0.016
+    },
+    {
+      "symbol": "HDFCBANK",
+      "ex": "2025-08-26",
+      "raw_move": -0.504,
+      "adj_largest_move": 0.016
+    },
+    {
+      "symbol": "INFY",
+      "ex": "2018-09-04",
+      "raw_move": -0.486,
+      "adj_largest_move": 0.028
+    },
+    {
+      "symbol": "WIPRO",
+      "ex": "2024-12-03",
+      "raw_move": -0.501,
+      "adj_largest_move": 0.018
+    }
+  ],
+  "delivery_coverage_EQ": 1.0,
+  "level_within_1pct_exact_kinds_only": 0.952325635792522,
+  "stocks_99pct_days_within_1pct_exact_kinds": "496 of 856"
+}

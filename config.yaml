@@ -11,8 +11,8 @@ paths:
 nse:
   backfill_start: 2016-08-29              # first day of the Bloomberg history
   politeness:
-    min_interval: 1.0                     # seconds between requests
-    jitter: 0.6
+    min_interval: 0.5                     # seconds between requests
+    jitter: 0.3
     retries: 4
     backoff: 4.0
     cooldown_after: 6

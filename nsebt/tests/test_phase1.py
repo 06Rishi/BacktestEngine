@@ -200,3 +200,24 @@ def test_parse_index_closes():
     df = nseparse.parse_indices(FX / "ind_close_all_29082016.csv")
     r = df[df["Index"] == "Nifty 500"].iloc[0]
     assert r["Close"] == 7361.00 and r["Date"] == pd.Timestamp("2016-08-29")
+
+
+def test_bonus_with_hyphen_and_special_dividend():
+    assert corpactions.parse_subject("Bonus- 1:2")[0]["factor"] == pytest.approx(2 / 3)
+    ev = corpactions.parse_subject("Special Dividend- Rs 202 Per Share")
+    assert ev[0]["kind"] == "dividend" and ev[0]["_div"] == 202
+
+
+def test_unconfirmed_bonus_not_applied_and_same_day_demerger_not_double_counted():
+    rows = [("2022-10-04", "S", "INE000A01011", "X", 345, 350), ("2022-10-06", "S", "INE000A01011", "X", 185, 176),
+            ("2022-10-04", "T", "INE000B01011", "Y", 300, 300), ("2022-10-06", "T", "INE000B01011", "Y", 303, 301)]
+    px = _px(rows)
+    ann = pd.DataFrame([
+        {"isin": "INE000A01011", "symbol": "X", "exDate": pd.Timestamp("2022-10-06"), "subject": "Bonus 1:2", "faceVal": 10},
+        {"isin": "INE000A01011", "symbol": "X", "exDate": pd.Timestamp("2022-10-06"), "subject": "Demerger", "faceVal": 10},
+        {"isin": "INE000B01011", "symbol": "Y", "exDate": pd.Timestamp("2022-10-06"), "subject": "Bonus 1:2", "faceVal": 10},
+    ])
+    ev = corpactions.price_factors(corpactions.events(ann), px).set_index(["Symbol", "kind"])
+    total = ev.loc[("X", "bonus"), "factor"] * ev.loc[("X", "arrangement"), "factor"]
+    assert total == pytest.approx(185 / 350, rel=1e-6)           # = the actual opening gap
+    assert not ev.loc[("Y", "bonus"), "applied"]                  # price never moved

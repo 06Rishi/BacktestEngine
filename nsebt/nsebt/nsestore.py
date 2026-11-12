@@ -35,7 +35,8 @@ from .nsefetch import UDIFF_START  # noqa: F401  (documents the format switch)
 log = logging.getLogger(__name__)
 
 LINK_GAP_DAYS = 10          # max trading days between an old ISIN's last row and the new one's first
-PRICE_KINDS = ("split", "bonus", "consolidation", "rights", "arrangement")   # applied by default
+PRICE_KINDS = ("split", "bonus", "consolidation", "rights", "arrangement",      # applied by default
+               "special_dividend", "inferred_split")
 JUMP = 0.35                 # raw overnight moves above this with no announcement are reported
 
 
@@ -215,6 +216,9 @@ def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None) -> 
     ann = corpactions.load_announcements(Path(raw_dir) / "corp_actions")
     ev = corpactions.price_factors(corpactions.events(ann), px) if len(ann) else pd.DataFrame(
         columns=["SecurityID", "effective_date", "kind", "factor"])
+    inf = corpactions.infer_from_isin_changes(px, ev) if len(ev) else pd.DataFrame()
+    if len(inf):
+        ev = pd.concat([ev, inf], ignore_index=True)
     ev.to_parquet(store_dir / "corporate_actions.parquet", index=False)
     uj = unexplained_jumps(px, ev)
     uj.to_parquet(store_dir / "unexplained_jumps.parquet", index=False)
@@ -294,6 +298,8 @@ def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None) -> 
         "corporate_actions_by_kind": ev["kind"].value_counts().to_dict(),
         "exact_actions_price_confirmed": int((ev["price_confirms"] == True).sum()),  # noqa: E712
         "exact_actions_price_not_confirmed": int((ev["price_confirms"] == False).sum()),  # noqa: E712
+        "exact_actions_not_applied": int((~ev["applied"].astype(bool)).sum()),
+        "inferred_from_isin_change": int((ev["kind"] == "inferred_split").sum()),
         "unexplained_jumps": int(len(uj)),
     })
     (store_dir / "build_report.json").write_text(json.dumps(rep, indent=2, default=str))

@@ -31,11 +31,12 @@ import pandas as pd
 NUM = r"(\d+(?:\.\d+)?)"
 RE_SPLIT = re.compile(r"(?:split|splt|sub-?division).*?(?:from|frm)\s*r[se]\.?\s*" + NUM + r".*?to\s*r[se]\.?\s*" + NUM, re.I)
 RE_CONSOL = re.compile(r"consolidation.*?from\s*r[se]\.?\s*" + NUM + r".*?to\s*r[se]\.?\s*" + NUM, re.I)
-RE_BONUS = re.compile(r"(?<![a-z])bonus\s*" + NUM + r"\s*:\s*" + NUM, re.I)
+RE_BONUS = re.compile(r"(?<![a-z])bonus\s*[-:]?\s*" + NUM + r"\s*:\s*" + NUM, re.I)
 RE_RIGHTS = re.compile(r"rights?(?:\s*issue)?\s*" + NUM + r"\s*:\s*" + NUM + r"(?:\s*@\s*prem(?:ium)?\s*r[se]\.?\s*" + NUM + r")?", re.I)
 RE_DIV = re.compile(r"dividend\s*-?\s*r[se]\.?\s*" + NUM, re.I)
 RE_ARRANGE = re.compile(r"demerg|arrangement|capital reduction", re.I)
 ARRANGE_MIN_GAP = 0.03
+SPECIAL_DIV = 0.05          # a dividend of 5%+ of the price is treated as a price event
 
 
 def load_announcements(folder: Path) -> pd.DataFrame:
@@ -155,29 +156,65 @@ def price_factors(ev: pd.DataFrame, px: pd.DataFrame) -> pd.DataFrame:
         a, b, iss = ev.loc[r, "_a"], ev.loc[r, "_b"], ev.loc[r, "_issue"]
         terp = (b * C[r] + a * iss) / ((a + b) * C[r])
         ev.loc[r, "factor"] = np.where(iss.notna() & (iss < C[r]), terp, 1.0)
+    ev["exact"] = ev["kind"].isin(["split", "bonus", "consolidation"])
+    exact_comb = (ev.assign(f=ev["factor"].where(ev["exact"], 1.0))
+                    .groupby(["SecurityID", "effective_date"])["f"].transform("prod"))
+    # price-implied factors exclude same-day exact events (e.g. bonus + demerger together)
     ar = ev["kind"] == "arrangement"
-    gap = ev["ex_open"] / C
+    gap = ev["ex_open"] / C / exact_comb
     ev.loc[ar, "factor"] = np.where((np.log(gap[ar]).abs() > np.log(1 + ARRANGE_MIN_GAP)) & (gap[ar] < 1),
                                     gap[ar], 1.0)
     dv = ev["kind"] == "dividend"
     if dv.any():
-        ev.loc[dv, "factor"] = (1 - ev.loc[dv, "_div"] / C[dv]).clip(lower=0.01)
+        ev.loc[dv, "factor"] = (1 - ev.loc[dv, "_div"] / (C[dv] * exact_comb[dv])).clip(lower=0.01)
+        special = dv & ((ev["factor"] <= 1 - SPECIAL_DIV) | ev["subject"].str.contains("special", case=False))
+        ev.loc[special, "kind"] = "special_dividend"
 
-    ev["exact"] = ev["kind"].isin(["split", "bonus", "consolidation"])
     # check: did the raw price move by about the combined exact factor on the ex-date?
     move = ev["ex_close"] / C
     ev["price_move"] = move
-    comb = (ev.assign(f=ev["factor"].where(ev["exact"], 1.0))
-              .groupby(["SecurityID", "effective_date"])["f"].transform("prod"))
-    ev["price_confirms"] = np.where(ev["exact"] & move.notna(),
-                                    np.log(move / comb).abs() < np.log(1.25), np.nan)
+    # with a same-day demerger the price falls by more than the exact factor alone
+    with_arr = ev.assign(a=ev["kind"].eq("arrangement")).groupby(["SecurityID", "effective_date"])["a"].transform("any")
+    ok = (np.log(move / exact_comb).abs() < np.log(1.25)) | (with_arr & (move < exact_comb * 1.25))
+    ev["price_confirms"] = np.where(ev["exact"] & move.notna(), ok, np.nan)
+    # an announced split/bonus the price did not show is not applied (announcement error,
+    # cancelled, or wrong ex-date); it stays in the table, flagged
+    ev["applied"] = ~(ev["exact"] & (ev["price_confirms"] == 0))
     keep = ["SecurityID", "matched_by", "ISIN", "Symbol", "ex_date", "effective_date", "kind", "factor", "exact",
-            "detail", "subject", "prior_close", "ex_open", "ex_close", "price_move", "price_confirms"]
+            "detail", "subject", "prior_close", "ex_open", "ex_close", "price_move", "price_confirms", "applied"]
     return ev[keep].sort_values(["SecurityID", "effective_date"]).reset_index(drop=True)
+
+
+def infer_from_isin_changes(px: pd.DataFrame, ev: pd.DataFrame, tol: float = 0.04) -> pd.DataFrame:
+    """Fallback for splits/consolidations NSE did not announce: the ISIN changes (face
+    value change) and the overnight gap matches a clean ratio, with no announced exact
+    event within 3 trading days."""
+    from .audit import nearest_ca
+    d = px.sort_values(["SecurityID", "Date"])
+    g = d.groupby("SecurityID")
+    prev_isin, prior = g["ISIN"].shift(1), g["Close"].shift(1)
+    ch = d[(d["ISIN"] != prev_isin) & prev_isin.notna()].assign(prior_close=prior, gap=d["Open"] / prior)
+    known = ev[ev["exact"]][["SecurityID", "effective_date"]].dropna()
+    rows = []
+    for r in ch.itertuples(index=False):
+        k = known[known["SecurityID"] == r.SecurityID]["effective_date"]
+        if len(k) and (abs((k - r.Date).dt.days) <= 5).any():
+            continue
+        name, f = nearest_ca(r.gap, tol)
+        if not name or abs(np.log(r.gap)) < np.log(1.35):
+            continue
+        rows.append({"SecurityID": r.SecurityID, "matched_by": "isin_change", "ISIN": r.ISIN, "Symbol": r.Symbol,
+                     "ex_date": r.Date, "effective_date": r.Date, "kind": "inferred_split", "factor": f,
+                     "exact": False, "detail": name, "subject": "inferred: ISIN change + clean price ratio",
+                     "prior_close": r.prior_close, "ex_open": r.Open, "ex_close": r.Close,
+                     "price_move": r.Close / r.prior_close, "price_confirms": np.nan, "applied": True})
+    return pd.DataFrame(rows)
 
 
 def combine_same_day(ev: pd.DataFrame) -> pd.DataFrame:
     """One factor per security per effective date (e.g. a bonus and a split together)."""
     ev = ev[ev["effective_date"].notna() & ev["factor"].notna()]
+    if "applied" in ev:
+        ev = ev[ev["applied"].astype(bool)]
     return (ev.groupby(["SecurityID", "effective_date"])["factor"].prod().rename("ratio").reset_index()
               .rename(columns={"effective_date": "Date"}))

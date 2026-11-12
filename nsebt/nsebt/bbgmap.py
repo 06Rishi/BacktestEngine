@@ -55,11 +55,21 @@ def _corr_topk(rb: pd.DataFrame, rn: pd.DataFrame, k: int = 5) -> dict[str, list
     return {b: [rn.columns[j] for j in top[i] if np.isfinite(corr[i, j])] for i, b in enumerate(rb.columns)}
 
 
-def _agreement(b: pd.Series, n: pd.Series) -> tuple[float, int]:
+def _agreement(b: pd.Series, n: pd.Series, tol: pd.Series | None = None) -> tuple[float, int]:
+    """Share of overlapping days where the two daily log returns agree within tol
+    (per day; defaults to AGREE_TOL)."""
     both = pd.concat([b, n], axis=1).dropna()
     if len(both) == 0:
         return 0.0, 0
-    return float(((both.iloc[:, 0] - both.iloc[:, 1]).abs() < AGREE_TOL).mean()), len(both)
+    t = AGREE_TOL if tol is None else tol.reindex(both.index).fillna(AGREE_TOL)
+    return float(((both.iloc[:, 0] - both.iloc[:, 1]).abs() < t).mean()), len(both)
+
+
+def tick_tolerance(close: pd.Series, tick: float = 0.01) -> pd.Series:
+    """Bloomberg rounds to 0.01, so a stock at Rs 0.50 can show a 2% 'move' from rounding
+    alone. Tolerance per day = max(AGREE_TOL, 1.5 ticks relative to the lower close)."""
+    lo = pd.concat([close, close.shift(1)], axis=1).min(axis=1)
+    return np.maximum(AGREE_TOL, 1.5 * tick / lo)
 
 
 def match(bbg: dict[str, pd.DataFrame], nse_adj: pd.DataFrame, history: pd.DataFrame,
@@ -81,6 +91,7 @@ def match(bbg: dict[str, pd.DataFrame], nse_adj: pd.DataFrame, history: pd.DataF
         isin_of = dict(zip(bbg_isin["Bloomberg_ID"].str.strip(), bbg_isin["ISIN"].str.strip()))
 
     top = _corr_topk(rb, rn)
+    tol = {b: tick_tolerance(B[b]).reindex(idx) for b in rb.columns}
     rows = []
     for b in B.columns:
         cands: dict[str, str] = {}
@@ -94,7 +105,7 @@ def match(bbg: dict[str, pd.DataFrame], nse_adj: pd.DataFrame, history: pd.DataF
         for sid, how in cands.items():
             if b not in rb or sid not in rn:
                 continue
-            a, n = _agreement(rb[b], rn[sid])
+            a, n = _agreement(rb[b], rn[sid], tol[b])
             scored.append((a, n, sid, how))
         scored.sort(key=lambda x: (-x[0], -x[1]))
         bdays = int(B[b].notna().sum())
@@ -143,3 +154,40 @@ def reconcile(bbg: dict[str, pd.DataFrame], nse: pd.DataFrame, mapping: pd.DataF
                      "bbg_factor_first": float((both["bbg"] / both["raw"]).iloc[0] /
                                                (both["bbg"] / both["raw"]).iloc[-1])})
     return pd.DataFrame(summ), pd.DataFrame(steps)
+
+
+def map_by_name(ids, history: pd.DataFrame, around: dict | None = None) -> pd.DataFrame:
+    """For Bloomberg IDs with no Bloomberg prices (so no returns to compare): the NSE
+    security whose symbol equals the Bloomberg root, preferring one trading around the
+    given date. Unvalidated by prices; marked method 'name_only'."""
+    rows = []
+    for b in ids:
+        r = root(b)
+        h = history[history["Symbol"] == r]
+        if around and b in around and len(h):
+            d = pd.Timestamp(around[b])
+            near = h[(h["first_date"] <= d + pd.Timedelta(days=120)) & (h["last_date"] >= d - pd.Timedelta(days=120))]
+            h = near if len(near) else h
+        sids = h["SecurityID"].unique()
+        rows.append({"Bloomberg_ID": b, "SecurityID": sids[0] if len(sids) == 1 else None,
+                     "method": "name_only" if len(sids) == 1 else "", "status":
+                     "ok_name_only" if len(sids) == 1 else ("ambiguous_name" if len(sids) > 1 else "no_match")})
+    return pd.DataFrame(rows)
+
+
+def apply_overrides(mp: pd.DataFrame, ov: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    """Manual Bloomberg_ID -> NSE symbol decisions (bbg_overrides.csv). They win over
+    automatic matches; a symbol is resolved to the latest security that used it."""
+    latest = history.sort_values("last_date").groupby("Symbol")["SecurityID"].last()
+    mp = mp.copy()
+    for b, sym in zip(ov["Bloomberg_ID"].str.strip(), ov["NSE_Symbol"].str.strip()):
+        sid = latest.get(sym)
+        if sid is None:
+            continue
+        row = {"Bloomberg_ID": b, "SecurityID": sid, "method": "override", "status": "ok_override"}
+        if (mp["Bloomberg_ID"] == b).any():
+            for k, v in row.items():
+                mp.loc[mp["Bloomberg_ID"] == b, k] = v
+        else:
+            mp = pd.concat([mp, pd.DataFrame([row])], ignore_index=True)
+    return mp

@@ -15,8 +15,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# Equity series. EQ normal; BE/BZ trade-for-trade (surveillance); SM/ST/SZ SME platform.
-EQUITY_SERIES = ("EQ", "BE", "BZ", "SM", "ST", "SZ")
+# Equity series. EQ normal; BE/BZ trade-for-trade (surveillance); SM/ST/SZ SME platform;
+# RR REITs and IV InvITs (some are Nifty 500 members).
+EQUITY_SERIES = ("EQ", "BE", "BZ", "SM", "ST", "SZ", "RR", "IV")
 SERIES_RANK = {s: i for i, s in enumerate(EQUITY_SERIES)}
 COLUMNS = ["Date", "Symbol", "Series", "ISIN", "Open", "High", "Low", "Close", "Last",
            "PrevClose", "Volume", "Turnover", "Trades", "Source"]
@@ -32,7 +33,8 @@ def _read_zip_csv(path: Path) -> pd.DataFrame:
 def _finish(df: pd.DataFrame, source: str, series=EQUITY_SERIES) -> pd.DataFrame:
     for c in ("Symbol", "Series", "ISIN"):
         df[c] = df[c].astype(str).str.strip()
-    df = df[df["Series"].isin(series) & df["ISIN"].str.startswith("INE")].copy()
+    # INE: ordinary shares; IN9: DVRs and partly paid shares
+    df = df[df["Series"].isin(series) & df["ISIN"].str.startswith(("INE", "IN9"))].copy()
     for c in NUMERIC:
         df[c] = pd.to_numeric(df[c].replace({"-": np.nan, "": np.nan}), errors="coerce")
     df["Source"] = source
@@ -49,7 +51,11 @@ def parse_cm_legacy(path: Path) -> pd.DataFrame:
     df = df.rename(columns={"SYMBOL": "Symbol", "SERIES": "Series", "OPEN": "Open", "HIGH": "High",
                             "LOW": "Low", "CLOSE": "Close", "LAST": "Last", "PREVCLOSE": "PrevClose",
                             "TOTTRDQTY": "Volume", "TOTTRDVAL": "Turnover", "TOTALTRADES": "Trades"})
-    df["Date"] = pd.to_datetime(df["TIMESTAMP"].str.strip(), format="%d-%b-%Y")
+    ts = df["TIMESTAMP"].str.strip()
+    d = pd.to_datetime(ts, format="%d-%b-%Y", errors="coerce")
+    df["Date"] = d.fillna(pd.to_datetime(ts, format="%d-%b-%y", errors="coerce"))   # a few files use 2-digit years
+    if df["Date"].isna().any():
+        raise ValueError(f"{path}: unparseable dates {ts[df['Date'].isna()].unique()[:3]}")
     if "Trades" not in df:
         df["Trades"] = np.nan
     return _finish(df, "cm_legacy")

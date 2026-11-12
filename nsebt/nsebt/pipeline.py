@@ -18,7 +18,7 @@ def bloomberg_clean(de_data: Path) -> dict[str, pd.DataFrame]:
     """Bloomberg prices with the audit's fixes: rows missing O/H/L (the synthetic IPO
     rows) are dropped by load_prices; '/F'-style artefact series are excluded."""
     b = bloomberg.load_prices(de_data)
-    return {k: v for k, v in b.items() if "/" not in k}
+    return {k: v for k, v in b.items() if not k.split()[0].endswith("/F")}
 
 
 def run(cfg: Config, skip_store: bool = False) -> dict:
@@ -45,6 +45,20 @@ def run(cfg: Config, skip_store: bool = False) -> dict:
     log.info("matching %d Bloomberg series to NSE securities ...", len(bbg))
     mp = bbgmap.match(bbg, nse, hist, bbg_isin)
     last_sym = hist.sort_values("last_date").groupby("SecurityID")["Symbol"].last()
+    # Bloomberg IDs in the membership lists that have no Bloomberg prices (recent listings)
+    cons = de_data / "raw" / "constituents"
+    from .audit import normalise_member_id
+    hm = pd.read_parquet(cons / "nifty500_historical_membership.parquet")
+    sm = pd.read_parquet(cons / "security_master.parquet")
+    when = dict(zip(normalise_member_id(hm["Ticker"]), pd.to_datetime(hm["Date"])))
+    when.update(dict(zip(sm["Bloomberg_ID"].astype(str), pd.to_datetime(sm["Snapshot_Date"]))))
+    extra = sorted(set(when) - set(mp["Bloomberg_ID"]) - {k for k in when if k.split()[0].endswith("/F")})
+    if extra:
+        nm = bbgmap.map_by_name(extra, hist, when)
+        mp = pd.concat([mp, nm], ignore_index=True)
+    ov_path = cfg.root / "bbg_overrides.csv"
+    if ov_path.exists():
+        mp = bbgmap.apply_overrides(mp, pd.read_csv(ov_path, dtype=str), hist)
     mp["NSE_Symbol"] = mp["SecurityID"].map(last_sym)
     mp.to_parquet(store / "bbg_mapping.parquet", index=False)
     mp.to_csv(out / "bbg_mapping.csv", index=False)

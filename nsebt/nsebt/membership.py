@@ -65,7 +65,7 @@ def build(constituents_dir: Path, mapping: pd.DataFrame, trading_days: pd.Dateti
                                         "repaired": True})], ignore_index=True)
         rep["repaired"][str(b.date())] = {"had": len(have), "added": len(add), "now": len(have) + len(add)}
 
-    ok = mapping[mapping["status"] == "ok"].set_index("Bloomberg_ID")["SecurityID"]
+    ok = mapping[mapping["status"].isin(["ok", "ok_name_only", "ok_override"])].set_index("Bloomberg_ID")["SecurityID"]
     m["SecurityID"] = m["Bloomberg_ID"].map(ok)
 
     if nse_list and Path(nse_list).exists():
