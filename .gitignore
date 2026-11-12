@@ -19,3 +19,4 @@ __MACOSX/
 
 # runtime
 logs/
+!nsebt/tests/fixtures/*.zip
