@@ -8,6 +8,9 @@ Data
   audit      audit the Bloomberg extract (Phase 0)
   check-indicators   compare every indicator with TA-Lib on all Nifty 500 securities
 
+Account
+  account    set capital, maximum positions, position cap and liquidity limit (asks for each value)
+
 Safety
   backup     copy everything that cannot be rebuilt to a backup folder (checksummed)
   restore    verify a backup and restore missing or changed files
@@ -161,6 +164,30 @@ def cmd_doctor(a):
     sys.exit(1 if fails else 0)
 
 
+# --------------------------------------------------------------------------- account
+
+def cmd_account(a):
+    from . import config
+    from .backtest import account
+    path = Path(a.config) if a.config else config.find()
+    cfg = config.load(path)
+    cur = account.from_config(cfg.raw)
+    flags = {k: getattr(a, k) for k in account.LIMITS if getattr(a, k) is not None}
+    try:
+        if a.show:
+            print(account.Account().describe() + "  (defaults; nothing saved yet)" if cur is None else cur.describe())
+            return
+        if flags:
+            new = (cur or account.Account()).with_overrides(**{k: account.parse(k, v) for k, v in flags.items()})
+        else:
+            print("Account limits. Press Enter to keep the value in brackets.")
+            new = account.prompt(cur)
+    except account.AccountError as e:
+        sys.exit(f"error: {e}")
+    account.save(path, new)
+    print(f"saved to {path}: {new.describe()}")
+
+
 # --------------------------------------------------------------------------- research (legacy)
 
 def _legacy_load(a):
@@ -254,6 +281,15 @@ def main(argv=None):
     ci = sub.add_parser("check-indicators", help="compare indicators with TA-Lib")
     ci.add_argument("--universe", default="nifty500", help="nifty500 or all")
     ci.set_defaults(fn=cmd_check_indicators)
+
+    ac = sub.add_parser("account", help="set account limits (asks for each value)")
+    ac.add_argument("--show", action="store_true", help="print the saved values and exit")
+    ac.add_argument("--capital", help="₹, more than 0 and at most 1,000,000,000")
+    ac.add_argument("--max-positions", dest="max_positions", help="1-100")
+    ac.add_argument("--max-position-pct", dest="max_position_pct", help="1-100 (% of equity)")
+    ac.add_argument("--max-participation-pct", dest="max_participation_pct",
+                    help="0.1-100 (% of 20-day average traded value)")
+    ac.set_defaults(fn=cmd_account)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")
