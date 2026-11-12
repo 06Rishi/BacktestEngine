@@ -45,3 +45,17 @@ backup:
     - config.yaml
     - reports/runs                   # daily update reports
   destinations: []                   # e.g. /run/media/<you>/drive or a Google Drive folder
+
+costs:
+  # Zerodha equity delivery. Source: Zerodha charges page and support article
+  # "What are transaction charges and how do NSE, BSE, and MCX calculate it?", checked 2026-11-13.
+  # The NSE transaction charge includes the IPFT charge: do not add IPFT separately.
+  brokerage: 0.0                 # ₹ per order
+  stt_pct: 0.1                   # % of value, buy and sell
+  transaction_pct: 0.00307       # % of value, buy and sell (NSE, includes IPFT)
+  sebi_per_crore: 10.0           # ₹ per crore, buy and sell
+  gst_pct: 18.0                  # % of brokerage + transaction + SEBI
+  stamp_pct_buy: 0.015           # % of value, buy only (uniform since July 2020; applied to all history)
+  dp_per_scrip_sell_day: 15.34   # ₹ once per stock per sell day
+  slippage_bps_buy: 10.0         # moves the fill price
+  slippage_bps_sell: 10.0
