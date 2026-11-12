@@ -11,6 +11,26 @@ mkdir -p data/DE && cp -r /path/to/DE/data data/DE/data   # or pass --de-data
 python -m pytest -q                                         # 14 tests
 ```
 
+## Environment
+
+The project uses a Python 3.12 virtual environment at the repository root:
+
+```bash
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python pandas numpy pyarrow requests pytest duckdb nbformat pyyaml
+cd nsebt && ../.venv/bin/python -m pytest -q
+```
+
+## Data audit (Phase 0)
+
+```bash
+../.venv/bin/python -m nsebt audit --de-root ../dataextracted/DE --out ../reports/audit \
+    --bhavcopy tests/fixtures/sec_bhavdata_full_12112026.csv
+```
+
+Writes CSV evidence and `audit_summary.json` to `reports/audit/`; the findings are written up in
+`reports/data_audit.md`.
+
 ## Daily data pipeline
 
 ```bash

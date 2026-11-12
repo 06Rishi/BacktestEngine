@@ -1,0 +1,131 @@
+{
+  "generated_utc": "2026-11-12T16:50:22+00:00",
+  "de_root": "../dataextracted/DE",
+  "config": {
+    "big_move": 0.2,
+    "gap_days": 5,
+    "ratio_tol": 0.04,
+    "market_day_min": 50,
+    "feature_sample": 40,
+    "seed": 0
+  },
+  "files": {
+    "total": 925,
+    "junk": 8,
+    "unreadable": 0,
+    "by_ext": {
+      ".parquet": 877,
+      ".csv": 32,
+      ".ipynb": 8
+    },
+    "empty_dirs": [
+      "DE/data/raw/prices",
+      "data/.ipynb_checkpoints",
+      "data/logs",
+      "data/raw/.ipynb_checkpoints",
+      "data/raw/constituents/.ipynb_checkpoints",
+      "data/raw/corporate_actions",
+      "data/raw/index",
+      "data/raw/macro",
+      "data/raw/prices/data/logs",
+      "data/raw/prices/data/processed",
+      "data/raw/prices/data/raw/constituents",
+      "data/raw/prices/data/raw/corporate_actions",
+      "data/raw/prices/data/raw/fundamentals",
+      "data/raw/prices/data/raw/index",
+      "data/raw/prices/data/raw/macro",
+      "data/raw/prices/data/raw/prices_daily",
+      "data/raw/prices_daily/.ipynb_checkpoints",
+      "prices"
+    ]
+  },
+  "prices": {
+    "files": 859,
+    "files_with_price_schema": 858,
+    "files_with_multiple_tickers": 0,
+    "rows": 1798332,
+    "tickers": 858,
+    "date_min": "2016-08-29",
+    "date_max": "2026-08-27",
+    "market_days": 2478,
+    "off_calendar_dates": 8,
+    "weekend_market_days": 10,
+    "duplicates": 0,
+    "ohlc_violations": 0,
+    "missing_ohl": 162,
+    "missing_close": 0,
+    "nonpositive": 0,
+    "zero_volume": 0,
+    "missing_volume": 672,
+    "gaps": 60,
+    "off_calendar_rows": 8,
+    "stale": 447,
+    "locked_bars": 2329,
+    "conflicting_duplicates": 0,
+    "missing_ohl_first_row_close_only": 162,
+    "tickers_ending_early": 76,
+    "tickers_starting_late": 213,
+    "big_moves": 353,
+    "big_move_labels": {
+      "real_move": 255,
+      "ipo_reference_row": 71,
+      "after_trading_gap": 12,
+      "spike_reversed": 10,
+      "ca_ratio_only": 4,
+      "ca_ratio_with_volume_shift": 1
+    },
+    "reference_events": {
+      "no jump (adjusted)": 8
+    }
+  },
+  "membership": {
+    "snapshots": 20,
+    "members_min": 338,
+    "members_max": 502,
+    "ids_ever_member": 859,
+    "members_without_price_file": 1,
+    "current_without_price_file": 28,
+    "price_files_never_member": 0,
+    "member_snapshot_rows_without_price_nearby": 6,
+    "canonical_mapping_status": {
+      "Mapped": 9856,
+      "Unmapped": 1
+    }
+  },
+  "name_match": {
+    "bhavcopy": "sec_bhavdata_full_12112026.csv",
+    "current_members": 500,
+    "current_root_is_nse_symbol": 203,
+    "former_members": 387,
+    "former_root_is_nse_symbol": 88
+  },
+  "fundamentals": {
+    "rows": 15534,
+    "securities": 856,
+    "securities_without_price_file": 18,
+    "price_tickers_without_fundamentals": 20,
+    "date_min": "2020-01-28",
+    "date_max": "2024-12-31"
+  },
+  "dividend_check": {
+    "securities": 763,
+    "median_tri_minus_price_cagr": 0.006274923200019211,
+    "share_with_gap_over_0.5pct": 0.5386631716906947
+  },
+  "features": {
+    "columns": 35,
+    "rows_features": 1798332,
+    "rows_raw": 1798332,
+    "only_in_features": 0,
+    "only_in_raw": 0,
+    "PX_OPEN_mismatch_rows": 0,
+    "PX_HIGH_mismatch_rows": 0,
+    "PX_LOW_mismatch_rows": 0,
+    "PX_LAST_mismatch_rows": 0,
+    "PX_VOLUME_mismatch_rows": 0,
+    "recompute_tickers": 43,
+    "features_fully_matching": 30,
+    "features_with_mismatch": [],
+    "early_values": 0
+  }
+}

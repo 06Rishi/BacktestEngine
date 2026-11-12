@@ -5,6 +5,7 @@
   map        map Bloomberg IDs to NSE symbols and check prices where the sources overlap
   backtest   run a strategy on the combined data
   signals    show what a strategy says to hold/buy as of the latest data
+  audit      audit the Bloomberg extract (DE folder) and write CSV evidence
 """
 from __future__ import annotations
 
@@ -141,6 +142,14 @@ def cmd_signals(a):
             print(" ", t)
 
 
+def cmd_audit(a):
+    from . import audit
+    s = audit.run(a.de_root, a.out, nse_bhavcopy=a.bhavcopy)
+    p = s["prices"]
+    print(f"{p['tickers']} series, {p['rows']:,} rows, {p['date_min']} to {p['date_max']}; "
+          f"{p['big_moves']} moves over 20% ({p['big_move_labels']})")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="nsebt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -175,6 +184,12 @@ def main(argv=None):
                        help="ignore point-in-time Nifty 500 membership")
         b.add_argument("--out", type=Path, default=Path("results"))
         b.set_defaults(fn=fn)
+
+    au = sub.add_parser("audit", help="audit the Bloomberg extract")
+    au.add_argument("--de-root", type=Path, required=True, help="the DE folder (contains data/)")
+    au.add_argument("--out", type=Path, default=Path("reports/audit"))
+    au.add_argument("--bhavcopy", type=Path, help="a sec_bhavdata_full CSV, to count name matches")
+    au.set_defaults(fn=cmd_audit)
 
     a = p.parse_args(argv)
     a.fn(a)
