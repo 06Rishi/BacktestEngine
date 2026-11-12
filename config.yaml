@@ -1,0 +1,35 @@
+# nsebt configuration. Relative paths are resolved against this file's folder.
+
+paths:
+  bloomberg_root: dataextracted/DE        # the unzipped Bloomberg extract (contains data/)
+  nse_raw: data/nse/raw                   # downloaded NSE files, never modified
+  nse_reference: data/nse/reference       # dated copies of EQUITY_L, symbolchange, Nifty 500 list
+  store: data/store                       # canonical parquet store built from the raw files
+  reports: reports
+  logs: logs
+
+nse:
+  backfill_start: 2016-08-29              # first day of the Bloomberg history
+  politeness:
+    min_interval: 1.0                     # seconds between requests
+    jitter: 0.6
+    retries: 4
+    backoff: 4.0
+    cooldown_after: 6
+    cooldown: 600
+    max_cooldowns: 3
+  # NSE occasionally trades on a weekend (Diwali Muhurat, Union Budget, special sessions).
+  # These were found in the Bloomberg calendar. Weekends after `try_weekends_after`
+  # are always tried, because there is no other calendar for them yet.
+  weekend_sessions:
+    - 2016-10-30
+    - 2019-10-27
+    - 2020-02-01
+    - 2020-11-14
+    - 2023-11-12
+    - 2024-01-20
+    - 2024-03-02
+    - 2024-05-18
+    - 2025-02-01
+    - 2026-02-01
+  try_weekends_after: 2026-08-28

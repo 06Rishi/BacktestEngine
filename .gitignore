@@ -16,3 +16,6 @@ results/
 .DS_Store
 __MACOSX/
 ._*
+
+# runtime
+logs/

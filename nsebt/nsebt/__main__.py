@@ -6,6 +6,8 @@
   backtest   run a strategy on the combined data
   signals    show what a strategy says to hold/buy as of the latest data
   audit      audit the Bloomberg extract (DE folder) and write CSV evidence
+  backfill   download NSE bhavcopy + delivery files for a date range (polite, resumable)
+  build      build the store, Bloomberg mapping, CA reconciliation and membership
 """
 from __future__ import annotations
 
@@ -150,6 +152,39 @@ def cmd_audit(a):
           f"{p['big_moves']} moves over 20% ({p['big_move_labels']})")
 
 
+def cmd_backfill(a):
+    from . import config, nsefetch
+    cfg = config.load(a.config)
+    nsefetch.setup_logging(cfg.path("logs") / f"backfill_{nsefetch.stamp()}.log")
+    start = a.start or cfg.backfill_start
+    end = a.end or date.today()
+    cli = nsefetch.NSEClient(cfg.path("nse_raw"), cfg.politeness)
+    if not a.skip_reference:
+        ref = cli.fetch_reference(cfg.path("nse_reference"))
+        print("reference files:", ", ".join(p.name for p in ref.values()))
+    sources = tuple(a.sources.split(","))
+    try:
+        res = cli.fetch_range(start, end, sources=sources, extra_dates=cfg.extra_dates(end))
+    except nsefetch.GiveUp as e:
+        sys.exit(f"stopped: {e}\nEverything fetched so far is cached; rerun the same command later to resume.")
+    print(res.summary())
+    for s, d, e in res.failed[:20]:
+        print(f"  failed {s} {d}: {e}")
+
+
+def cmd_build(a):
+    from . import config, nsefetch, pipeline
+    cfg = config.load(a.config)
+    nsefetch.setup_logging(cfg.path("logs") / f"build_{nsefetch.stamp()}.log")
+    rep = pipeline.run(cfg, skip_store=a.skip_store)
+    s = rep.get("store", {})
+    if s:
+        print(f"store: {s['rows']:,} rows, {s['securities']} securities ({s['active_securities']} active), "
+              f"{s['first_date']} to {s['last_date']}, {s['corporate_actions']} corporate actions")
+    print("mapping:", rep["mapping"]["by_status"])
+    print(f"done in {rep['seconds']}s; details in reports/phase1/")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="nsebt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -190,6 +225,19 @@ def main(argv=None):
     au.add_argument("--out", type=Path, default=Path("reports/audit"))
     au.add_argument("--bhavcopy", type=Path, help="a sec_bhavdata_full CSV, to count name matches")
     au.set_defaults(fn=cmd_audit)
+
+    bf = sub.add_parser("backfill", help="download NSE files for a date range")
+    bf.add_argument("--config", type=Path, help="config.yaml (default: search upwards)")
+    bf.add_argument("--start", type=_date)
+    bf.add_argument("--end", type=_date)
+    bf.add_argument("--sources", default="price,mto", help="comma list: price,mto,sec_full")
+    bf.add_argument("--skip-reference", action="store_true")
+    bf.set_defaults(fn=cmd_backfill)
+
+    bd = sub.add_parser("build", help="build store, mapping and membership from raw files")
+    bd.add_argument("--config", type=Path)
+    bd.add_argument("--skip-store", action="store_true", help="reuse the existing store")
+    bd.set_defaults(fn=cmd_build)
 
     a = p.parse_args(argv)
     a.fn(a)
