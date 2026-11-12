@@ -1,0 +1,4 @@
+ticker,price_rows,present_in_price_data,treatment
+360ONE IN,0,False,ACCEPTED_EXCEPTION; exclude only if usable history is insufficient
+RAYMONDL IN,0,False,ACCEPTED_EXCEPTION; exclude only if usable history is insufficient
+SANOFICO IN,0,False,ACCEPTED_EXCEPTION; exclude only if usable history is insufficient

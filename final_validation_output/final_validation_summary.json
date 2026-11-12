@@ -1,0 +1,33 @@
+{
+  "generated_utc": "2026-11-06T13:05:44.702110+00:00",
+  "data_root": "/home/rishi/Documents/vscode/BacktestEngine/dataextracted",
+  "price_files": 859,
+  "price_rows": 1798332,
+  "price_securities": 858,
+  "membership_rows": 9857,
+  "membership_snapshots": 20,
+  "mapping_rows": 9857,
+  "duplicate_key_groups": 0,
+  "exact_duplicate_groups": 0,
+  "conflicting_duplicate_groups": 0,
+  "extreme_return_flags": 47,
+  "calendar_gap_flags": 155,
+  "accepted_extraction_exceptions": [
+    "360ONE IN",
+    "RAYMONDL IN",
+    "SANOFICO IN"
+  ],
+  "engine_development_status": "NOT_READY",
+  "historical_results_status": "NOT_YET_CERTIFIED",
+  "fundamental_strategy_status": "NOT_READY_OR_NOT_ENABLED",
+  "issues_by_severity": {
+    "BLOCKER": 6,
+    "REVIEW": 3
+  },
+  "manual_evidence_flags": {
+    "membership_effective_dates_verified": false,
+    "price_adjustment_basis_verified": false,
+    "corporate_action_reconciliation_completed": false,
+    "feature_definitions_confirmed": false
+  }
+}

@@ -1,0 +1,5 @@
+dataset,column,rows,missing,missing_pct
+prices,open,1798828,162,0.009
+prices,high,1798828,162,0.009
+prices,low,1798828,162,0.009
+prices,volume,1798828,672,0.0374

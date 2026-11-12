@@ -1,0 +1,18 @@
+# environments
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# raw / large data (not versioned)
+dataextracted/
+data/
+results/
+*.parquet
+*.zip
+
+# macOS junk
+.DS_Store
+__MACOSX/
+._*

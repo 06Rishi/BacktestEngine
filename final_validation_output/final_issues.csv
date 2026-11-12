@@ -1,0 +1,10 @@
+severity,area,code,detail,evidence
+REVIEW,prices,EXTREME_DAILY_MOVES_UNRECONCILED,47 moves exceed 50%; reconcile with corporate actions and source data.,
+REVIEW,prices,PRICE_GAPS_UNRECONCILED,155 inter-observation gaps exceed 7 calendar days.,
+BLOCKER,mapping,MAPPING_SCHEMA_NOT_RECOGNIZED,Could not detect membership identifier and mapping source/target identifier columns.,
+BLOCKER,membership,SPARSE_SNAPSHOTS_NOT_EFFECTIVE_DATES,Only 20 snapshots. Set MEMBERSHIP_EFFECTIVE_DATES_VERIFIED=True only after independently establishing exact effective periods.,
+BLOCKER,membership,MEMBERSHIP_EFFECTIVE_DATE_ATTESTATION_MISSING,Historical constituent effective dates have not been independently verified.,
+REVIEW,features,FEATURE_MISMATCHES_OR_DEFINITION_DIFFERENCES,One or more supplied features differ from independent calculations; confirm exact definitions and source price basis.,
+BLOCKER,features,FEATURE_DEFINITIONS_NOT_ATTESTED,"Indicator formulas, initialization, price basis and missing-value conventions have not been fully confirmed.",
+BLOCKER,corporate_actions,PRICE_ADJUSTMENT_BASIS_UNVERIFIED,"Vendor documentation has not established whether the price series is raw, split-adjusted or dividend-adjusted.",
+BLOCKER,corporate_actions,CORPORATE_ACTION_RECONCILIATION_INCOMPLETE,Corporate actions and large price discontinuities have not been reconciled.,

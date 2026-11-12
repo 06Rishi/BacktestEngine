@@ -1,0 +1,4 @@
+gate,status,meaning
+Price-only engine development,NOT_READY,Whether validated data can safely be wired into the engine without unresolved structural blockers.
+Credible historical strategy results,NOT_YET_CERTIFIED,"Requires verified effective membership, corporate-action/adjustment basis and feature definitions."
+Fundamental strategies,NOT_READY_OR_NOT_ENABLED,Requires point-in-time public-availability timestamps and revision history.

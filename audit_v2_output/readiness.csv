@@ -1,0 +1,3 @@
+strategy,status,reason
+Price-only technical,BLOCKED,"Requires prices, reliable mapping, effective historical membership and verified corporate-action basis."
+Fundamental + technical,BLOCKED,Also requires point-in-time publication/availability timestamps and revision handling.

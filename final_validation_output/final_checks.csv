@@ -1,0 +1,5 @@
+area,check,status,detail,evidence
+prices,No conflicting duplicate ticker/date keys,PASS,No conflicting duplicate groups found.,
+prices,No exact duplicate ticker/date keys,PASS,No exact duplicate groups found.,
+prices,OHLC ordering,PASS,No OHLC ordering violations among complete OHLC rows.,
+fundamentals,Fundamentals excluded from initial strategy,PASS,Initial strategy is price-only; fundamentals are not used as signals or filters.,

@@ -1,0 +1,79 @@
+{
+  "generated_utc": "2026-11-06T12:59:53.749013+00:00",
+  "data_root": "/home/rishi/Documents/vscode/BacktestEngine/dataextracted",
+  "report_root": "/home/rishi/Documents/vscode/BacktestEngine/audit_v2_output",
+  "files_discovered_excluding_metadata": 931,
+  "parquet_files": 877,
+  "csv_files": 36,
+  "parquet_read_failures": 0,
+  "price_files": 860,
+  "price_rows_loaded": 1798828,
+  "price_securities_loaded": 858,
+  "membership_files": [
+    "DE/data/raw/constituents/nifty500_membership_validation.csv",
+    "DE/data/raw/constituents/nifty500_historical_membership.parquet"
+  ],
+  "mapping_audit_files": [
+    "DE/data/raw/constituents/historical_membership_price_mapping_audit.csv"
+  ],
+  "security_master_files": [
+    "DE/data/raw/constituents/security_master.parquet"
+  ],
+  "fundamentals_files": [
+    "DE/data/raw/fundamentals/nifty500_historical_fundamental_incremental_field_exceptions.parquet",
+    "DE/data/raw/fundamentals/potentially_invalid_fundamental_values.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamentals_failures.parquet",
+    "DE/data/raw/fundamentals/fundamentals_field_missingness.csv",
+    "DE/data/raw/fundamentals/clean_quarterly_price_fundamental_overlap.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamentals_incremental_failures.parquet",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamentals_retry_failures.parquet",
+    "DE/data/raw/fundamentals/fundamentals_coverage_report.csv",
+    "DE/data/raw/fundamentals/fundamentals_numeric_validity.csv",
+    "DE/data/raw/fundamentals/fundamentals_completely_missing_fields.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamentals_retry_security_errors.parquet",
+    "DE/data/raw/fundamentals/fundamentals_quality_flags.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamental_incremental_security_errors.parquet",
+    "DE/data/raw/fundamentals/missing_fundamentals_audit.parquet",
+    "DE/data/raw/fundamentals/quarterly_price_fundamental_overlap.csv",
+    "DE/data/raw/fundamentals/nifty500_fundamentals.parquet",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamental_security_errors.parquet",
+    "DE/data/raw/fundamentals/fundamentals_date_structure.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamentals.parquet",
+    "DE/data/raw/fundamentals/fundamentals_quarterly_coverage_by_security.csv",
+    "DE/data/raw/fundamentals/fundamentals_missingness_by_security.csv",
+    "DE/data/raw/fundamentals/nifty500_historical_fundamental_field_exceptions.parquet",
+    "DE/data/raw/fundamentals/fundamentals_start_date_audit.csv",
+    "DE/data/raw/fundamentals/fundamentals_missingness_by_quarter.csv"
+  ],
+  "feature_files": [
+    "audit_output/feature_audit.csv",
+    "DE/data/processed/nifty500_historical_stock_features.parquet"
+  ],
+  "corporate_action_files": [],
+  "issue_counts": {
+    "BLOCKER": 25,
+    "FAIL": 744,
+    "REVIEW": 16,
+    "UNVERIFIED": 2
+  },
+  "readiness": [
+    {
+      "strategy": "Price-only technical",
+      "status": "BLOCKED",
+      "reason": "Requires prices, reliable mapping, effective historical membership and verified corporate-action basis."
+    },
+    {
+      "strategy": "Fundamental + technical",
+      "status": "BLOCKED",
+      "reason": "Also requires point-in-time publication/availability timestamps and revision handling."
+    }
+  ],
+  "limitations": [
+    "No authoritative exchange trading calendar was supplied; calendar gaps are review flags, not confirmed missing sessions.",
+    "No vendor documentation was supplied to prove price adjustment basis.",
+    "Corporate action file presence does not prove completeness or correctness.",
+    "Sparse membership snapshots cannot establish exact constituent effective dates between snapshots.",
+    "Fundamentals are not point-in-time valid without reliable public-availability timestamps and revision history.",
+    "Feature comparisons depend on matching indicator definitions, lookback and initialization conventions."
+  ]
+}

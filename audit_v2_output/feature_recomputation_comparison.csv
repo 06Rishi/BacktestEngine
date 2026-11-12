@@ -1,0 +1,12 @@
+file,feature,overlap_rows,mismatch_rows,mismatch_pct,mae,max_abs_error
+DE/data/processed/nifty500_historical_stock_features.parquet,Daily_Return,1797226,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,DMA_20,1781782,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,DMA_50,1756096,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,DMA_100,1713296,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,DMA_200,1627942,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,52W_High,1583783,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,52W_Low,1583783,0,0.0,0.0,0.0
+DE/data/processed/nifty500_historical_stock_features.parquet,Volatility_20D,1780924,1780922,99.99988769874516,0.3558639823640968,51.304535659465344
+DE/data/processed/nifty500_historical_stock_features.parquet,Volatility_60D,1746680,1746680,100.0,0.37069740154533715,29.626793582148462
+DE/data/processed/nifty500_historical_stock_features.parquet,Volatility_120D,1695320,1695320,100.0,0.37738867205870225,20.955724037060495
+DE/data/processed/nifty500_historical_stock_features.parquet,Volatility_252D,1582934,1582934,100.0,0.3843849460336252,14.46243547212055
