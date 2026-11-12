@@ -1,0 +1,4 @@
+strategy,oos_viewed,source,date,note
+momentum,true,legacy_bloomberg,2026-11-12,"2022+ results (6 variants, top-20 portfolio) viewed on the legacy Bloomberg engine; report file not retained in the repository"
+breakout,true,legacy_bloomberg,2026-11-12,"2022+ results viewed on the legacy Bloomberg engine; report file not retained in the repository"
+macd_trend_pullback,false,,,"never run; 2022+ is an untouched holdout"
