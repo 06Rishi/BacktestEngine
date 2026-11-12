@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 query = ["duckdb>=1.0"]
+reference = ["TA-Lib>=0.6"]
 
 [project.scripts]
 nsebt = "nsebt.__main__:main"

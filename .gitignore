@@ -22,3 +22,4 @@ logs/
 !nsebt/tests/fixtures/*.zip
 reports/runs/
 *.egg-info/
+data/features/

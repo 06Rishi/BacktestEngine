@@ -4,7 +4,7 @@ A local tool for researching and backtesting swing-trading strategies on NSE equ
 It keeps a clean, survivorship-free daily history of every NSE stock since 2016, updated
 from NSE's own files. Placing orders is out of scope.
 
-Status: Phase 0 (data audit), Phase 1 (data layer) and Phase 2 (daily pipeline) are done.
+Status: Phase 0 (data audit), Phase 1 (data layer), Phase 2 (daily pipeline) and Phase 3 (indicators) are done.
 Indicators, strategies, the backtest engine, the app and the scanner follow (see `plan.md`).
 
 ## Setup

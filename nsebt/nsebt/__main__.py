@@ -6,6 +6,7 @@ Data
   ingest     add NSE files you downloaded yourself in a browser
   build      rebuild the store, Bloomberg mapping and membership from the raw files
   audit      audit the Bloomberg extract (Phase 0)
+  check-indicators   compare every indicator with TA-Lib on all Nifty 500 securities
 
 Safety
   backup     copy everything that cannot be rebuilt to a backup folder (checksummed)
@@ -100,6 +101,19 @@ def cmd_audit(a):
     p = s["prices"]
     print(f"{p['tickers']} series, {p['rows']:,} rows, {p['date_min']} to {p['date_max']}; "
           f"{p['big_moves']} moves over 20% ({p['big_move_labels']})")
+
+
+def cmd_check_indicators(a):
+    from . import data, refcheck
+    cfg = _cfg(a)
+    p = data.load_panel(cfg.path("store"), a.universe)
+    out = cfg.path("reports") / "phase3"
+    df = refcheck.run(p, out)
+    refcheck.time_library(p).to_csv(out / "timings.csv", index=False)
+    worst = df["max_rel_diff"].max()
+    print(df[["indicator", "values_compared", "max_rel_diff", "first_valid_mismatches"]].to_string(index=False))
+    print(f"{len(df)} indicators, {df['values_compared'].sum():,} values; worst relative difference {worst:.1e}; "
+          f"written to {out}")
 
 
 # --------------------------------------------------------------------------- safety
@@ -236,6 +250,10 @@ def main(argv=None):
     au.add_argument("--out", type=Path, default=Path("reports/audit"))
     au.add_argument("--bhavcopy", type=Path, help="a sec_bhavdata_full CSV, to count name matches")
     au.set_defaults(fn=cmd_audit)
+
+    ci = sub.add_parser("check-indicators", help="compare indicators with TA-Lib")
+    ci.add_argument("--universe", default="nifty500", help="nifty500 or all")
+    ci.set_defaults(fn=cmd_check_indicators)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")

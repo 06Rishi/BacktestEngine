@@ -1,0 +1,9 @@
+old_column,new,rows_ignored_per_security,max_rel_diff,median_rel_diff
+DMA_20,sma(20),0,0.0,0.0
+DMA_200,sma(200),0,0.0,0.0
+Return_12M,roc(252),0,0.0,0.0
+RSI,rsi(14),0,4.8084375579828995,0.0
+RSI,rsi(14),100,0.045347115700940355,0.0
+MACD,macd line,0,25.04027469025938,0.0
+MACD,macd line,150,0.004456795895521282,0.0
+Volatility_20D,"std of simple daily returns (old definition, reproduced)",0,1.7532618046442272e-07,0.0
