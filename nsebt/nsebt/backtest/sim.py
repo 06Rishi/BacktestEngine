@@ -93,8 +93,8 @@ class SimConfig:
     account: Account = field(default_factory=Account)
     costs: CostModel = field(default_factory=CostModel)
     seed: int = 0
-    buy_order_ttl_days: int = 1
-    max_unfilled_days_sell: int | None = None   # None = retry until filled
+    buy_order_ttl_days: int = 1                 # unfilled buys are cancelled after this many days
+    # unfilled sells (not traded, locked at the lower circuit) retry every day until filled
 
 
 # --------------------------------------------------------------------------- state
