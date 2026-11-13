@@ -99,6 +99,17 @@ def value_per_share(kind: str, factor: float, prior_close: float, detail=None) -
     return float("nan")
 
 
+RE_RIGHTS = re.compile(r"(\d+)\s*:\s*(\d+)\s*@\s*(\d+(?:\.\d+)?)")
+
+
+def parse_rights(detail) -> tuple[int, int, float] | None:
+    """(a, b, issue price) from '1:15 @ 1257': a new shares for every b held at the issue price."""
+    m = RE_RIGHTS.search(str(detail or ""))
+    if not m or int(m.group(1)) <= 0 or int(m.group(2)) <= 0 or float(m.group(3)) <= 0:
+        return None
+    return int(m.group(1)), int(m.group(2)), float(m.group(3))
+
+
 def split_shares(shares: int, factor: float) -> tuple[int, float]:
     """(whole shares, fractional entitlement) after a share event: shares ÷ factor."""
     new = shares / factor

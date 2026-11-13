@@ -20,7 +20,7 @@ import pandas as pd
 
 from .account import Account
 from .costs import Charges, CostModel, DPTracker
-from .ledger import LedgerConfig, schedule, split_shares
+from .ledger import Event, LedgerConfig, parse_rights, schedule, split_shares
 
 REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired")
 
@@ -143,6 +143,16 @@ class Result:
     unfilled: pd.DataFrame
     open_positions: pd.DataFrame
     config: dict
+    ledger: pd.DataFrame = field(default_factory=pd.DataFrame)   # corporate actions applied to holdings
+
+
+@dataclass
+class Receivable:
+    amount: float               # ₹
+    due_t: int                  # paid as cash at the start of this day (≥ D: not paid within the data)
+    kind: str
+    j: int
+    approx: bool
 
 
 # --------------------------------------------------------------------------- simulator
@@ -177,6 +187,8 @@ class Simulator:
             if 0 < t < D:
                 self.unscheduled.setdefault(t, []).append((j, ex, kind, detail))
         self.in_lieu: list[tuple[Position, float]] = []   # fractional shares, paid at the ex-date close
+        self.receivables: list[Receivable] = []
+        self.ledger_log: list[dict] = []
 
     # ----------------------------------------------------------------- helpers
     def _date(self, t):
@@ -188,8 +200,12 @@ class Simulator:
     def holdings_value(self) -> float:
         return sum(p.shares * p.last_close for p in self.positions.values())
 
+    def receivables_value(self) -> float:
+        return sum(r.amount for r in self.receivables)
+
     def equity(self) -> float:
-        return self.cash + self.holdings_value()
+        """Cash + holdings + receivables. Buying power is cash only."""
+        return self.cash + self.holdings_value() + self.receivables_value()
 
     def _reject(self, t, j, reason, **kw):
         self.rejected.append({"date": self._date(t), "SecurityID": self._id(j), "reason": reason, **kw})
@@ -397,6 +413,10 @@ class Simulator:
 
     # ----------------------------------------------------------------- corporate actions
     def _corporate_actions(self, t):
+        due = [r for r in self.receivables if r.due_t <= t]
+        if due:
+            self.cash += sum(r.amount for r in due)
+            self.receivables = [r for r in self.receivables if r.due_t > t]
         for j, ex, kind, detail in self.unscheduled.get(t, ()):
             if j in self.positions:
                 self.warnings.append(f"{self._id(j)}: {kind} ({detail}) ex {ex.date()} has no effective date "
@@ -405,8 +425,82 @@ class Simulator:
             pos = self.positions.get(e.j)
             if pos is None:
                 continue
+            before = pos.shares
             if e.is_share:
                 self._share_event(pos, e.factor)
+                amount, due_t, how = 0.0, None, "shares"
+            else:
+                amount, due_t, how = self._value_event(t, pos, e)
+            self.ledger_log.append({"date": self._date(t), "SecurityID": self._id(e.j), "kind": e.kind,
+                                    "detail": e.detail, "factor": e.factor, "shares_before": before,
+                                    "shares_after": pos.shares, "amount": amount, "treatment": how,
+                                    "due_date": (self._date(due_t) if due_t is not None and due_t < len(self.m.dates)
+                                                 else None if due_t is None else "after data end"),
+                                    "approx": e.approx})
+
+    def _due_calendar(self, e: Event, days: int) -> int:
+        return int(self.m.dates.searchsorted(e.ex_date + pd.Timedelta(days=days), side="left"))
+
+    def _value_event(self, t, pos: Position, e: Event):
+        """Dividend, rights or demerger on the pre-event share count. The raw price drops by the
+        value moved out of the share; that value is credited per the config. Price levels (stop,
+        target, trailing reference, last close) move with the factor, as in the adjusted series.
+        Returns (amount credited, due day or None, treatment)."""
+        L = self.cfg.ledger
+        amount = pos.shares * e.amount_ps
+        if np.isfinite(e.factor):
+            pos.last_close *= e.factor
+            for name in ("stop", "target", "trail_ref"):
+                v = getattr(pos, name)
+                if v is not None:
+                    setattr(pos, name, v * e.factor)
+        if e.kind in ("dividend", "special_dividend"):
+            if L.dividends == "ignore":
+                return 0.0, None, "ignored"
+            if L.dividends == "instant":
+                self.cash += amount
+                pos.income += amount
+                return amount, t, "cash"
+            due = self._due_calendar(e, L.dividend_pay_lag_days)
+            return self._receivable(pos, amount, due, e), due, "receivable"
+        if e.kind == "rights":
+            if L.rights == "ignore":
+                return 0.0, None, "ignored"
+            due = t + L.rights_realise_lag_days
+            if L.rights == "subscribe":
+                return self._subscribe(t, pos, e, due)
+            return self._receivable(pos, amount, due, e), due, "entitlement sold"
+        # arrangement (demerger, scheme, capital reduction): no child mapping in the data
+        due = self._due_calendar(e, L.demerger_realise_lag_days)
+        if L.demerger == "table_then_receivable":
+            self.warnings.append(f"{self._id(e.j)}: demerger ex {e.ex_date.date()} has no demergers.csv row; "
+                                 f"booked as a receivable")
+        return self._receivable(pos, amount, due, e), due, "receivable"
+
+    def _receivable(self, pos: Position, amount: float, due_t: int, e: Event) -> float:
+        if amount > 0:
+            self.receivables.append(Receivable(amount, due_t, e.kind, e.j, e.approx))
+            pos.income += amount
+        return amount
+
+    def _subscribe(self, t, pos: Position, e: Event, due: int):
+        """Take up the rights at the issue price with cash on the ex-date; entitlements that cash
+        or whole shares can't cover are sold as under sell_entitlement."""
+        r = parse_rights(e.detail)
+        if r is None:
+            self.warnings.append(f"{self._id(e.j)}: rights '{e.detail}' unparsed; entitlement sold instead")
+            return self._receivable(pos, pos.shares * e.amount_ps, due, e), due, "entitlement sold"
+        a, b, issue = r
+        per_ent = e.amount_ps * b / a                   # value of one entitlement: TERP − issue price
+        ents = pos.shares * a / b
+        n = min(math.floor(ents + 1e-9), math.floor(max(self.cash, 0.0) / issue))
+        if n > 0:
+            self.cash -= n * issue
+            pos.shares += n
+            pos.cost_basis += n * issue
+        rest = (ents - n) * per_ent
+        self._receivable(pos, rest, due, e)
+        return n * issue, due, f"subscribed {n}"
 
     def _share_event(self, pos: Position, f: float):
         """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""
@@ -458,8 +552,10 @@ class Simulator:
             if t < D - 1:
                 self._decide_exits(t)
                 self._decide_entries(t, eq)
+            rv = self.receivables_value()
             self.daily.append({"date": self._date(t), "equity": eq, "cash": self.cash,
-                               "holdings": eq - self.cash, "positions": len(self.positions),
+                               "holdings": eq - self.cash - rv, "receivables": rv,
+                               "positions": len(self.positions),
                                "costs": self.costs_today})
         return self._result()
 
@@ -471,7 +567,7 @@ class Simulator:
                             "stop": self._active_stop(p)[0], "target": p.target, "pending_exit": p.exit_reason}
                            for p in self.positions.values()])
         return Result(daily, trades, pd.DataFrame(self.rejected), pd.DataFrame(self.unfilled), op,
-                      {"max_positions": self.max_pos, "warnings": self.warnings})
+                      {"max_positions": self.max_pos, "warnings": self.warnings}, pd.DataFrame(self.ledger_log))
 
 
 def simulate(market: Market, signals: Signals, cfg: SimConfig = SimConfig()) -> Result:
