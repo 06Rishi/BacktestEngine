@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from _simkit import cfg, market, sig
+from _simkit import ca, cfg, market, sig
 from nsebt.backtest import mergers
 from nsebt.backtest.ledger import LedgerConfig
 from nsebt.backtest.sim import Market, Simulator, Sizing, Signals
@@ -183,3 +183,65 @@ def test_market_without_turnover_has_no_liquidity_limit():
     c = pd.DataFrame({"A": [100.0, 100.0, 100.0]}, index=pd.bdate_range("2024-01-01", periods=3))
     m = Market.from_frames(c, c * 1.01, c * 0.99, c)
     assert np.isinf(m.adv).all()
+
+
+# --------------------------------------------------------------------------- multi-part conversions
+
+def basket_market():
+    # A (150) converts on day 4 into 1 B (100) + 1/5 C (200) + Rs 10 cash per share
+    m = market({"A": [150] * 4 + [None] * 4, "B": [100] * 8, "C": [200] * 8})
+    m.mergers = pd.DataFrame({"parent": ["A", "A"], "effective_date": [m.dates[4]] * 2, "acquirer": ["B", "C"],
+                              "ratio": [1.0, 0.2], "cash": [10.0, 0.0]})
+    return m
+
+
+def test_conversion_into_several_securities_plus_cash():
+    m = basket_market()
+    sim, r = run(m, merger="convert_and_hold", value=1500)       # 10 A shares
+    b, c = sim.positions[1], sim.positions[2]
+    assert b.shares == 10 and c.shares == 2 and b.from_j == c.from_j == 0
+    assert b.cost_basis + c.cost_basis == pytest.approx(1500)
+    assert b.cost_basis == pytest.approx(1500 * 1000 / 1400) and b.stop is None
+    assert r.daily["cash"].iloc[4] - r.daily["cash"].iloc[3] == pytest.approx(100)        # Rs 10 x 10
+    d = r.daily["equity"]
+    assert d.iloc[4] == pytest.approx(d.iloc[3] - 1500 + 1000 + 400 + 100)
+    sim, r = run(m, merger="convert_then_sell", value=1500)
+    assert sorted(r.trades["exit_security"]) == ["B", "C"] and not sim.positions
+    assert r.trades["gross_pnl"].sum() == pytest.approx(1000 + 400 + 100 - 1500)
+
+
+def test_converted_shares_not_entitled_to_the_acquirers_same_day_event():
+    # B goes ex-demerger (factor 0.3) on the conversion day: A holders get post-event B shares only
+    m = market({"A": [60] * 4 + [None] * 4, "B": [100] * 4 + [30] * 4})
+    m.mergers = pd.DataFrame({"parent": ["A"], "effective_date": [m.dates[4]], "acquirer": ["B"], "ratio": [2.0],
+                              "cash": [0.0]})
+    m.actions = ca(m, [("B", 4, "arrangement", 0.3, "Demerger", 100.0)])
+    sim, r = run(m, merger="convert_and_hold", value=600)         # 10 A -> 20 B
+    assert sim.positions[1].shares == 20
+    assert r.daily["receivables"].eq(0).all()
+    assert r.ledger["kind"].tolist() == ["merger"]
+
+
+def test_load_multi_part_rows_and_cash(tmp_path):
+    p = tmp_path / "m.csv"
+    rows = [{c: "" for c in mergers.COLUMNS} for _ in range(2)]
+    rows[0].update(parent="P", effective_date="2020-06-16", acquirer="Q", ratio="99/100", cash="5")
+    rows[1].update(parent="P", effective_date="2020-06-16", acquirer="R", ratio="1/5")
+    pd.DataFrame(rows).to_csv(p, index=False)
+    t = mergers.load(p)
+    assert t["ratio"].tolist() == pytest.approx([0.99, 0.2]) and t["cash"].tolist() == [5.0, 0.0]
+    rows[1]["effective_date"] = "2020-06-17"
+    pd.DataFrame(rows).to_csv(p, index=False)
+    with pytest.raises(ValueError, match="different dates"):
+        mergers.load(p)
+
+
+def test_repo_tables_are_complete_for_nifty500_members():
+    if not (STORE / "lifecycle.parquet").exists():
+        pytest.skip("store not built")
+    lc = pd.read_parquet(STORE / "lifecycle.parquet")
+    mem = set(pd.read_parquet(STORE / "membership.parquet")["SecurityID"].dropna())
+    assert not (lc["SecurityID"].isin(mem) & (lc["cls"] == "unknown")).any()
+    t = mergers.read(ROOT / "mergers.csv")
+    filled = t[t["acquirer"].str.strip() != ""]
+    assert (filled["source"].str.strip() != "").all() and not t["note"].str.contains("REVIEW").any()

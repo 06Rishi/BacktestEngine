@@ -1,0 +1,30 @@
+SecurityID,Symbol,cls,value,source,note
+INE202B01012,DHFL,delisted,0,"NSE notice 11-Jun-2021: resolution plan provides for delisting with no value attributable to equity shares",delisted 29-Sep-2021
+INE068D01021,CASTEXTECH,delisted,0,"NSE notice 20-Jul-2021: resolution plan provides delisting without any exit price",delisted Dec-2021
+INE872A01014,SREINFRA,delisted,0,"NSE notice 14-Aug-2023: existing shares stand cancelled under the resolution plan",delisted 14-Dec-2023
+INE501W01021,SPTL,delisted,0,"Filing 07-May-2025: record date for extinguishment and cancellation of the entire existing equity",delisted 21-May-2025 (liquidation sale)
+INE429C01035,SINTEX,delisted,0,"Filing 21-Mar-2022: resolution plan reduces existing share capital to zero",delisted 10-Mar-2023
+INE013A01015,RELCAPITAL,delisted,0,"Filing 01-Oct-2024: entire share capital cancelled and extinguished for NIL consideration",delisted 13-Feb-2025
+INE694C01018,LAKSHVILAS,delisted,0,"NSE notices 25-Nov and 16-Dec-2020; RBI/Govt scheme: paid-up capital written off on amalgamation with DBS Bank India",delisted 18-Dec-2020
+INE143H01015,KSK,delisted,0,"Filing 22-Jun-2021: share capital reduced and shares delisted under NCLT order 28-Apr-2021 (sale in liquidation)",equity holders received nothing
+INE775B01025,KWALITY,delisted,0,"NSE notice 27-Feb-2022: delisted under NCLT order 21-Dec-2021 after sale in liquidation",liquidation: equity ranks last (IBC s.53)
+INE099J01015,JPINFRATEC,delisted,0,"Resolution plan (NCLT 07-Mar-2023): aggregate exit of Rs 14 lakh to all public shareholders, under Rs 0.01 per share",delisted 21-Feb-2025; rounded to 0
+INE988E01028,JMTAUTOLTD,delisted,0,"Filing Aug-2023: all shares extinguished by capital reduction without payment of any price",delisted 18-Dec-2023
+INE293A01013,ROLTA,delisted,0,"Filing 31-Dec-2025: resolution plan delists and extinguishes the equity shares; no payment to shareholders stated",delisted 19-Jan-2026; assumed nil
+INE455F01025,JPASSOCIAT,delisted,0,"Filing 17-Mar-2026: shares cancelled and extinguished for zero consideration; exit price NIL",delisted 18-Jun-2026
+INE130C01021,AMTEKAUTO,delisted,0.10,"Filing (resolution plan): Rs 2.5 crore in aggregate to non-promoter shareholders, about Rs 0.10-0.13 per share",delisted 27-Sep-2021; per-share figure approximate
+INE802G01018,JETAIRWAYS,delisted,0,"Supreme Court liquidation order 07-Nov-2024 (filing same day); equity ranks last in liquidation (IBC s.53)",not yet formally delisted; assumed nil
+INE489H01020,NITINFIRE,delisted,0,"Filing 01-Aug-2024: announcement by the company's liquidator; equity ranks last in liquidation (IBC s.53)",assumed nil
+INE701B01021,PUNJLLOYD,delisted,0,"Filings 2026: company in liquidation (IBBI Liquidation Process Regulations); equity ranks last (IBC s.53)",assumed nil
+INE008I01026,COX&KINGS,delisted,,"NSE notice 22-Feb-2023: delisted (company in liquidation); payout not stated",delisting policy applies
+INE825H01017,ESSDEE,delisted,,"NSE notices 31-Aug-2020 and 05-Aug-2021: compulsory delisting",delisting policy applies
+INE122R01018,MANPASAND,delisted,,"NSE notice 04-Aug-2025: compulsory delisting w.e.f. 05-Aug-2025",delisting policy applies
+INE446C01013,GLOBOFFS,delisted,,"NSE notice 01-Mar-2021: voluntary delisting under SEBI Delisting Regulations 2009 (exit price not found)",delisting policy applies
+INE285B01017,SPICEJET,delisted,,"NSE trading stopped after 28-Apr-2023 (permitted-to-trade category; no NSE filings); the stock continued on BSE",delisting policy applies; last_close is the realistic value (sellable on BSE)
+INE703A01011,VIDEOIND,suspended,,"NSE notice 15-Jun-2021: suspended; NCLT plan approval set aside by NCLAT (filing 06-Jan-2022); CIRP ongoing",no final outcome by data end
+INE187A01017,JBFIND,suspended,,"Filings 2024-2026: CIRP; resolution plan rejected 18-Mar-2026",no final outcome by data end
+INE589G01011,BRFL,suspended,,"Filings to Aug-2024: CIRP",no final outcome by data end
+INE752P01024,FRETAIL,suspended,,"Filings to Jul-2025: CIRP",no final outcome by data end
+INE220J01025,FCONSUMER,suspended,,"Filings Oct-2026: CIRP ongoing (meeting of creditors)",no final outcome by data end
+INE416L01017,EROSMEDIA,suspended,,"No NSE trades after 30-Jun-2025 (BZ series); company filings continue to Oct-2026",no suspension notice found
+INE294A01037,BALLARPUR,suspended,,"NSE notice 21-Jun-2023: suspended for capital reduction; public holding written down to 41.25 lakh new shares, not relisted on NSE",value of the written-down shares unknown

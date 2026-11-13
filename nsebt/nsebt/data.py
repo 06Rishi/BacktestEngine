@@ -82,9 +82,11 @@ class Panel:
 
 
 def load_panel(store: Path, universe: str | list = "nifty500", start=None, end=None,
-               series=("EQ", "BE", "BZ"), kinds=nsestore.PRICE_KINDS) -> Panel:
+               series=("EQ", "BE", "BZ"), kinds=nsestore.PRICE_KINDS, extra=()) -> Panel:
     """universe: 'nifty500' (every security that was ever a member, with a membership
-    mask), 'all' (all securities in `series`), or a list of SecurityIDs."""
+    mask), 'all' (all securities in `series`), or a list of SecurityIDs.
+    extra: further SecurityIDs to load alongside, never members (e.g. merger acquirers, so a
+    converted holding can be held and sold)."""
     store = Path(store)
     px = nsestore.load_prices(store, adjusted=True, kinds=kinds)
     px = px[px["Series"].isin(series)]
@@ -97,6 +99,7 @@ def load_panel(store: Path, universe: str | list = "nifty500", start=None, end=N
         u = None
     else:
         ids, u = sorted(universe), None
+    ids = sorted(set(ids) | set(extra))
     px = px[px["SecurityID"].isin(ids)]
     if start is not None:
         px = px[px["Date"] >= pd.Timestamp(start)]

@@ -5,7 +5,8 @@ paths:
   nse_raw: data/nse/raw                   # downloaded NSE files, never modified
   nse_reference: data/nse/reference       # dated copies of EQUITY_L, symbolchange, Nifty 500 list
   store: data/store                       # canonical parquet store built from the raw files
-  mergers: mergers.csv                    # manual stock-for-stock merger table (nsebt mergers)
+  mergers: mergers.csv                    # manual share-conversion table: mergers, schemes, relistings
+  lifecycle_overrides: lifecycle_overrides.csv   # sourced outcomes for securities that stopped trading
   reports: reports
   logs: logs
 
@@ -44,6 +45,7 @@ backup:
     - journal                        # trade journal (Phase 7)
     - bbg_overrides.csv
     - mergers.csv
+    - lifecycle_overrides.csv
     - config.yaml
     - reports/runs                   # daily update reports
   destinations: []                   # e.g. /run/media/<you>/drive or a Google Drive folder

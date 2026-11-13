@@ -266,7 +266,7 @@ class Simulator:
             "exit_date": self._date(t), "exit_price": px, "exit_at": at, "exit_reason": reason,
             "days_held": t - pos.entry_t, "income": pos.income, "gross_pnl": gross,
             "costs": sell_charges + pos.buy_charges.total, "net_pnl": net,
-            "return": net / (pos.cost_basis + pos.buy_charges.total),
+            "return": net / basis if (basis := pos.cost_basis + pos.buy_charges.total) else float("nan"),
         }
         self.trades.append(pos.trade)
 
@@ -478,7 +478,9 @@ class Simulator:
             if j in self.positions:
                 self.warnings.append(f"{self._id(j)}: {kind} ({detail}) ex {ex.date()} has no effective date "
                                      f"in the store; not applied to the open position")
-        for e in self.events.get(t, ()):
+        # mergers last: shares received today are not entitled to the acquirer's own events today
+        todays = self.events.get(t, ())
+        for e in [x for x in todays if x.kind != "merger"] + [x for x in todays if x.kind == "merger"]:
             pos = self.positions.get(e.j)
             if pos is None:
                 continue
@@ -574,13 +576,14 @@ class Simulator:
 
     def _delist(self, t, pos: Position, e: Event) -> float:
         """Exit a security that stopped trading for good: the delisting policy's share of the last
-        close, credited as cash with no trading charges."""
-        mult = delisting_value(self.cfg.ledger.delisting)
-        px = pos.last_close * mult
+        close (or the value a source states, e.g. 0 when the equity was extinguished), credited as
+        cash with no trading charges."""
+        known = np.isfinite(e.value)
+        px = e.value if known else pos.last_close * delisting_value(self.cfg.ledger.delisting)
         value = pos.shares * px
         self.cash += value
-        why ="delisted" if e.detail == "delisted" else f"stopped trading ({self.cfg.ledger.unknown_grace_days}-day grace)"
-        self._record_trade(t, pos, value, 0.0, px, why, self.cfg.ledger.delisting)
+        why = "delisted" if e.detail == "delisted" else f"stopped trading ({self.cfg.ledger.unknown_grace_days}-day grace)"
+        self._record_trade(t, pos, value, 0.0, px, why, "stated value" if known else self.cfg.ledger.delisting)
         del self.positions[pos.j]
         return value
 
@@ -592,42 +595,78 @@ class Simulator:
                 setattr(pos, name, v * f)
 
     def _merger(self, t, pos: Position, e: Event) -> str:
-        """Convert the parent holding into acquirer shares at the scheme ratio. Fractions become cash
-        in lieu at the acquirer's close. convert_then_sell sells at the acquirer's open the same day."""
+        """Convert the parent holding into each acquirer's shares at its scheme ratio, plus any cash
+        component. Fractions become cash in lieu at the acquirer's close. convert_then_sell sells
+        each component at the acquirer's next open. Cost basis and buy charges are split across the
+        components by their value at the previous close (all to the first when a price is missing)."""
         j = pos.j
         del self.positions[j]
-        if e.to_j < 0:
-            # acquirer not loaded: value the holding at the parent's last close and close it
-            self.warnings.append(f"{self._id(j)}: merged into a security not in the market; "
-                                 f"closed at the last close")
+        S = pos.shares
+        if e.cash:
+            amount = S * e.cash
+            self.cash += amount
+            pos.income += amount
+            self._credit(t, j, amount)
+        parts = [(e.to_j, e.ratio)] + list(e.extra)
+        missing = [k for k, _ in parts if k < 0]
+        parts = [(k, r) for k, r in parts if k >= 0]
+        if missing:
+            self.warnings.append(f"{self._id(j)}: {len(missing)} merger component(s) not in the market; "
+                                 + ("their value is not credited" if parts else "closed at the last close"))
+        if not parts:
+            if e.cash:
+                self._record_trade(t, pos, 0.0, 0.0, pos.last_close, "merger", "cash component")
+                return "cash"
             self._sell(t, pos, pos.last_close, "merger", "last close (acquirer not loaded)")
             return "closed at last close"
-        whole, frac = split_shares(pos.shares, 1.0 / e.ratio)
-        self._scale_levels(pos, 1.0 / e.ratio)
-        pc = self.m.prev_close[t, e.to_j]
-        pos.last_close = pc if np.isfinite(pc) else pos.last_close / e.ratio
-        pos.shares, pos.from_j, pos.j = whole, (pos.from_j if pos.from_j is not None else j), e.to_j
-        if frac:
-            self.in_lieu.append((pos, frac))
-        if whole == 0:
-            return "cash in lieu"
+        vals = [S * r * self.m.prev_close[t, k] for k, r in parts]
+        w = [v / sum(vals) for v in vals] if all(np.isfinite(vals)) and sum(vals) > 0 else \
+            [1.0] + [0.0] * (len(parts) - 1)
         sell = self.cfg.ledger.merger == "convert_then_sell"
-        held = self.positions.get(e.to_j)
+        origin = pos.from_j if pos.from_j is not None else j
+        charges, basis = pos.buy_charges, pos.cost_basis
+        out = []
+        for i, ((k, r), wi) in enumerate(zip(parts, w)):
+            q = pos if i == 0 else Position(j=k, shares=0, entry_t=pos.entry_t, signal_t=pos.signal_t,
+                                            entry_price=0.0, buy_charges=charges, exit_reason=pos.exit_reason,
+                                            exit_signal_t=pos.exit_signal_t)
+            whole, frac = split_shares(S, 1.0 / r)
+            pc = self.m.prev_close[t, k]
+            q.last_close = pc if np.isfinite(pc) else pos.last_close / r
+            q.cost_basis = basis * wi
+            q.buy_charges = Charges(*(getattr(charges, f) * wi for f in
+                                      ("brokerage", "stt", "transaction", "sebi", "gst", "stamp", "dp")))
+            if i == 0 and len(parts) == 1:
+                self._scale_levels(q, 1.0 / r)
+            else:                    # price levels don't carry over to a basket: entry at allocated cost, no stop
+                q.stop = q.target = q.trail_frac = q.trail_ref = None
+                q.entry_price = q.cost_basis / whole if whole else 0.0
+            q.shares, q.from_j, q.j = whole, origin, k
+            if frac:
+                self.in_lieu.append((q, frac))
+            if whole:
+                self._place(t, q, sell)
+            out.append(f"{whole} x {self._id(k)}")
+        return ("converted, sold at open: " if sell else "converted: ") + ", ".join(out)
+
+    def _place(self, t, pos: Position, sell: bool):
+        """Put converted shares into the book: a new position, a pending sale next to an existing
+        holding, or (convert_and_hold) combined with an existing holding."""
+        k = pos.j
+        held = self.positions.get(k)
         if sell and not pos.exit_reason:
             pos.exit_reason, pos.exit_signal_t = "merger exit", t
         if held is None:
-            self.positions[e.to_j] = pos
+            self.positions[k] = pos
         elif sell or pos.exit_reason:
             self.side_sells.append(pos)
         else:
-            # convert_and_hold into an existing holding: one position, combined cost
-            n = held.shares + whole
-            held.entry_price = (held.entry_price * held.shares + pos.entry_price * whole) / n
+            n = held.shares + pos.shares
+            held.entry_price = (held.entry_price * held.shares + pos.entry_price * pos.shares) / n
             held.shares, held.cost_basis = n, held.cost_basis + pos.cost_basis
             held.income += pos.income
             held.buy_charges = held.buy_charges + pos.buy_charges
             self.in_lieu = [(held if q is pos else q, f) for q, f in self.in_lieu]
-        return "converted, sold at open" if sell else "converted"
 
     def _share_event(self, pos: Position, f: float):
         """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""

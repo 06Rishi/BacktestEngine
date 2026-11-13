@@ -1,9 +1,16 @@
-"""Stock-for-stock mergers (amendments 2.3): the manual `mergers.csv` table.
+"""Share conversions (amendments 2.3): the manual `mergers.csv` table.
 
-One row per parent security. Only rows with both `acquirer` and `ratio` filled are applied.
-`ratio` = acquirer shares received per parent share (HDFC Ltd -> HDFC Bank: 42/25 = 1.68).
-`effective_date` = the first trading day after the parent's last trade: the holding converts
-at the start of that day.
+Covers stock-for-stock mergers and schemes that end a listing by issuing other listed shares,
+including capital reductions that relist the same company under a new ISIN the store could not
+link (e.g. Ruchi Soya -> Ruchi, 1 new share per 100).
+
+One row per (parent, acquirer). A parent with several rows receives every component: e.g. Max
+India -> 99/100 Max Healthcare + 1/5 Max India (new). Only rows with `acquirer` and `ratio`
+filled are applied. `ratio` = acquirer shares received per parent share (HDFC Ltd -> HDFC Bank:
+42/25 = 1.68). `cash` = ₹ received per parent share besides shares (e.g. Cairn India: four ₹10
+redeemable preference shares with a cash exit at par = ₹40); put it on one row of the parent.
+`effective_date` = the first trading day after the parent's last trade: the holding converts at
+the start of that day. Every filled row cites its source.
 
 `seed` lists candidates: every Nifty 500 member that stopped trading before the end of the data,
 plus announcements whose subject mentions amalgamation or merger (not demerger). It never
@@ -18,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 COLUMNS = ["parent", "parent_symbol", "last_trade", "effective_date", "acquirer", "acquirer_symbol",
-           "ratio", "implied_ratio", "source", "note"]
+           "ratio", "cash", "implied_ratio", "source", "note"]
 TRUNCATION_DAYS = 5          # stopped within this many trading days of the data end: truncated, not a candidate
 RE_MERGER = r"amalgamat|merger"
 RE_DEMERGER = r"de-?merg"
@@ -33,26 +40,35 @@ def read(path: Path) -> pd.DataFrame:
     missing = set(COLUMNS[:7]) - set(df.columns)
     if missing:
         raise ValueError(f"{path.name}: missing column(s) {sorted(missing)}")
-    return df
+    for c in COLUMNS:
+        if c not in df:
+            df[c] = ""
+    return df[COLUMNS + [c for c in df.columns if c not in COLUMNS]]
 
 
 def load(path: Path, ids=None) -> pd.DataFrame:
-    """Filled rows as (parent, effective_date, acquirer, ratio), validated."""
+    """Filled rows as (parent, effective_date, acquirer, ratio, cash), validated."""
     df = read(path)
     df = df[(df["acquirer"].str.strip() != "") & (df["ratio"].str.strip() != "")].copy()
+    cash = df["cash"].str.strip().replace("", "0")
     out = pd.DataFrame({
         "parent": df["parent"].str.strip(),
         "effective_date": pd.to_datetime(df["effective_date"], errors="coerce"),
         "acquirer": df["acquirer"].str.strip(),
         "ratio": pd.to_numeric(df["ratio"].map(_ratio), errors="coerce"),
+        "cash": pd.to_numeric(cash, errors="coerce"),
     }).reset_index(drop=True)
-    bad = out[out["effective_date"].isna() | ~(out["ratio"] > 0) | (out["parent"] == out["acquirer"])]
+    bad = out[out["effective_date"].isna() | ~(out["ratio"] > 0) | (out["parent"] == out["acquirer"])
+              | ~(out["cash"] >= 0)]
     if len(bad):
         raise ValueError(f"{Path(path).name}: invalid row(s) for {bad['parent'].tolist()} "
-                         f"(need a date, a positive ratio and a different acquirer)")
-    dup = out["parent"][out["parent"].duplicated()]
+                         f"(need a date, a positive ratio, cash ≥ 0 and a different acquirer)")
+    dup = out[out.duplicated(["parent", "acquirer"])]["parent"]
     if len(dup):
         raise ValueError(f"{Path(path).name}: parent listed twice: {dup.tolist()}")
+    dates = out.groupby("parent")["effective_date"].nunique()
+    if (dates > 1).any():
+        raise ValueError(f"{Path(path).name}: components with different dates: {dates[dates > 1].index.tolist()}")
     return out
 
 
@@ -119,12 +135,17 @@ def merge_seed(existing: pd.DataFrame, seed: pd.DataFrame) -> pd.DataFrame:
     for c in COLUMNS:
         if c not in out:
             out[c] = ""
-    return out[COLUMNS + [c for c in out.columns if c not in COLUMNS]].fillna("")
+    out = out[COLUMNS + [c for c in out.columns if c not in COLUMNS]].astype(object)
+    return out.where(out.notna(), "")
 
 
 def refresh_implied(table: pd.DataFrame, close: pd.DataFrame) -> pd.DataFrame:
     t = table.copy()
+    multi = t[t["acquirer"].str.strip() != ""]["parent"].value_counts()
     for i, r in t.iterrows():
+        if multi.get(r["parent"], 0) > 1 or str(r.get("cash", "")).strip() not in ("", "0"):
+            t.at[i, "implied_ratio"] = ""          # one component of several: no single-price check
+            continue
         if str(r["acquirer"]).strip():
             v = implied_ratio(close, r["parent"], r["acquirer"].strip(), r["last_trade"] or r["effective_date"])
             t.at[i, "implied_ratio"] = "" if not np.isfinite(v) else f"{v:.4f}"

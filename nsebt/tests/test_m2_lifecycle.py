@@ -126,3 +126,36 @@ def test_delisting_policy_validation():
     for bad in ("haircut(150)", "haircut", "half"):
         with pytest.raises(ValueError, match="delisting"):
             LedgerConfig(delisting=bad)
+
+
+# --------------------------------------------------------------------------- sourced overrides
+
+def test_overrides_set_class_and_stated_value(tmp_path):
+    p = tmp_path / "o.csv"
+    pd.DataFrame({"SecurityID": ["D", "S"], "Symbol": ["DEL", "SUS"], "cls": ["delisted", "suspended"],
+                  "value": ["0", ""], "source": ["NSE notice: shares extinguished", "NSE notice: suspended"],
+                  "note": ["", ""]}).to_csv(p, index=False)
+    ov = lifecycle.read_overrides(p)
+    sec = secs([("D", "DEL", CAL[12]), ("S", "SUS", CAL[14])])
+    out = lifecycle.classify(sec, CAL, overrides=ov).set_index("SecurityID")
+    assert out.at["D", "cls"] == "delisted" and out.at["D", "value"] == 0
+    assert out.at["S", "cls"] == "suspended" and np.isnan(out.at["S", "value"])
+    assert out.at["D", "source"] == "lifecycle_overrides.csv"
+
+
+@pytest.mark.parametrize("bad", [{"cls": "gone"}, {"value": "-1"}, {"source": ""}])
+def test_overrides_validation(tmp_path, bad):
+    row = {"SecurityID": "D", "Symbol": "DEL", "cls": "delisted", "value": "0", "source": "x", "note": ""}
+    row.update(bad)
+    p = tmp_path / "o.csv"
+    pd.DataFrame([row]).to_csv(p, index=False)
+    with pytest.raises(ValueError, match="invalid"):
+        lifecycle.read_overrides(p)
+
+
+def test_stated_delisting_value_overrides_the_policy():
+    m = stopped_market("delisted")
+    m.lifecycle["value"] = 0.0
+    sim, r = run(m, LedgerConfig(delisting="last_close"))
+    t = r.trades.iloc[0]
+    assert t["exit_price"] == 0 and t["exit_at"] == "stated value" and t["net_pnl"] == pytest.approx(-1000)

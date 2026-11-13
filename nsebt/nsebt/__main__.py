@@ -232,7 +232,8 @@ def cmd_lifecycle(a):
             NSEClient(cfg.path("nse_raw"), cfg.politeness).fetch_reference(ref, files=LIFECYCLE_FILES)
         except Exception as e:      # fallback: the cached lists, or classification from the data alone
             print(f"warning: NSE lists not fetched ({e}); using cached copies if any")
-    out = lifecycle.build(store, ref, cfg.root / cfg.raw["paths"].get("mergers", "mergers.csv"))
+    out = lifecycle.build(store, ref, cfg.root / cfg.raw["paths"].get("mergers", "mergers.csv"),
+                          cfg.root / cfg.raw["paths"].get("lifecycle_overrides", "lifecycle_overrides.csv"))
     mem = set(pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna())
     print(f"{store / 'lifecycle.parquet'}: {len(out)} securities stopped trading before the end of the data")
     print(pd.DataFrame({"all": out["cls"].value_counts(),

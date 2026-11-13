@@ -148,13 +148,13 @@ def reconcile(market: Market, adj_close: np.ndarray, tol: float = TOL) -> Reconc
                           {"reinvest_run": t1 - t0, "compare": t2 - t1, "receivable_run": t3 - t2})
 
 
-def from_store(store, universe="nifty500") -> tuple[Market, np.ndarray, float]:
+def from_store(store, universe="nifty500", extra=()) -> tuple[Market, np.ndarray, float]:
     """Market (raw prices + corporate actions) and the total-return adjusted close, aligned."""
     from pathlib import Path
     from ..data import load_panel
     from ..nsestore import PRICE_KINDS
     t0 = time.perf_counter()
-    panel = load_panel(Path(store), universe, kinds=PRICE_KINDS + ("dividend",))
+    panel = load_panel(Path(store), universe, kinds=PRICE_KINDS + ("dividend",), extra=extra)
     ca = pd.read_parquet(Path(store) / "corporate_actions.parquet")
     m = Market.from_panel(panel, actions=ca)
     adj = panel.close.reindex(index=m.dates, columns=m.ids).to_numpy(float)

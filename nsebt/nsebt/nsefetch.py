@@ -399,3 +399,48 @@ def setup_logging(log_file: Path | None = None, level=logging.INFO):
 
 def stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+ANN_API = "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol={symbol}"
+ANN_WARMUP = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
+
+
+def fetch_announcements(out_dir: Path, symbols, polite: Politeness = Politeness(), session=None,
+                        refresh: bool = False) -> dict[str, Path]:
+    """NSE corporate announcements (filings: schemes, record dates, delisting and suspension
+    notices) for each symbol, cached as one JSON file per symbol. Used to classify securities
+    that stopped trading."""
+    import requests
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    s = session or requests.Session()
+    s.headers.update({**HEADERS, "Accept": "application/json, text/plain, */*", "Referer": ANN_WARMUP})
+    warmed = False
+    out = {}
+    for sym in symbols:
+        p = out_dir / f"{sym.replace('&', '_')}.json"
+        if p.exists() and not refresh:
+            out[sym] = p
+            continue
+        if not warmed:
+            s.get(ANN_WARMUP, timeout=polite.timeout, headers={"Accept": "text/html,*/*"})
+            warmed = True
+        for attempt in range(polite.retries):
+            time.sleep(polite.min_interval * 2 + random.uniform(0, polite.jitter))
+            try:
+                r = s.get(ANN_API.format(symbol=requests.utils.quote(sym)), timeout=polite.timeout)
+                if r.status_code in (401, 403):
+                    s.get(ANN_WARMUP, timeout=polite.timeout, headers={"Accept": "text/html,*/*"})
+                    raise BlockedError(f"HTTP {r.status_code}")
+                r.raise_for_status()
+                data = r.json()
+                if not isinstance(data, list):
+                    raise ValueError(f"unexpected JSON: {str(data)[:100]}")
+                p.write_text(json.dumps(data))
+                out[sym] = p
+                break
+            except Exception as e:  # noqa: BLE001
+                wait = min(polite.backoff * 2 ** attempt, polite.max_backoff)
+                log.warning("announcements %s attempt %d: %s; waiting %.0fs", sym, attempt + 1, e, wait)
+                time.sleep(wait)
+    return out

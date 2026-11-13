@@ -2,12 +2,12 @@
 
 Date 2026-11-13. Spec: `docs/phase45_amendments.md`. Progress log: `reports/phase45_progress.md`.
 
-**Status.** M1.1–M2.6 are complete and pushed. 224 of 224 tests pass in about 5 s. Milestones 3–5 are on hold until this gate is approved.
+**Status.** M1.1–M2.6 are complete and pushed. 233 of 233 tests pass in about 5 s.
 
-**Decisions needed (section 6):**
-1. Approve the reconciliation method.
-2. Check the 24 merger ratios in `mergers.csv` and the 10 rows marked REVIEW.
-3. Accept or override the treatment of the 54 unexplained stopped Nifty 500 members.
+**Gate A follow-up (2026-11-13):**
+- Approved: the reconciliation method (section 6, item 1).
+- Resolved from NSE filings: all merger ratios and every stopped Nifty 500 member (items 2 and 3). Details are in `reports/phase45_conversions.md`.
+- Milestones 3–5 can start once you confirm the resolutions below.
 
 ---
 
@@ -23,8 +23,8 @@ Date 2026-11-13. Spec: `docs/phase45_amendments.md`. Progress log: `reports/phas
 | `test_m1_run.py` | 5 | Identical runs for the same config and seed, config hash, frozen Run schema, store version |
 | `test_m2_ledger.py` | 20 | Every row of the 2.2 table, fractional bonus, consolidation to cash, split on fill day, T+1 entitlement, cost-basis P&L, trailing stop across a split, unscheduled rows, config |
 | `test_m2_receivables.py` | 13 | Dividend receivable and its lag, receivables in sizing but not buying power, instant and ignore modes, rights sold or subscribed, demerger receivable, value events before share events |
-| `test_m2_mergers.py` | 15 | Convert then sell, convert and hold, merging into an existing holding, acquirer missing, table validation, seeding, real HDFC → HDFC Bank |
-| `test_m2_lifecycle.py` | 13 | One test per class, every delisting policy, unknown grace period, suspension, truncation, NSE list parsing |
+| `test_m2_mergers.py` | 19 | Convert then sell, convert and hold, merging into an existing holding, acquirer missing, multi-part conversion with cash, no same-day entitlement to the acquirer's events, table validation, seeding, real HDFC → HDFC Bank, no unknown or unsourced rows |
+| `test_m2_lifecycle.py` | 18 | One test per class, every delisting policy, stated delisting value, sourced overrides and their validation, unknown grace period, suspension, truncation, NSE list parsing |
 | `test_m2_eligibility.py` | 7 | Each A4 criterion, no future data, fill-day volume has no effect, universe exit hold/sell |
 | `test_m2_reconcile.py` | 9 | Reconciliation of every event kind; detection of a missed event, reversed factor, wrong date, wrong prior close; future truncation (3 seeds); real-store sample and speed |
 
@@ -90,28 +90,41 @@ The checks are proven to detect errors. Mutation tests fail as expected when an 
 
 ## 6. Findings and decisions needed
 
-1. **The reconciliation method differs from the wording of 2.6.** The spec asks the default engine, with dividends as receivables, to match the total-return series to 1e-6 per day. That can't hold, and not because of a bug.
-   - The adjusted series reinvests each dividend at the ex-date price, while the engine holds it as cash.
-   - The two drift apart by about D/P × the next day's return, roughly 1e-4 per ex-date.
-   - What was done instead: check (a) runs the same engine in a reinvest-equivalent mode and matches exactly; check (b) shows the receivable mode preserves value on every ex-date.
-   - Together they catch everything 2.6 targets: factor direction, missed or double-counted events, wrong dates and continuity breaks. The 0.5% threshold is unchanged.
-   - **Approve, or say if you want a different check (stop rule S6).**
+1. **Reconciliation method: approved.** Check (a) reinvests dividends to match the total-return adjusted series exactly. Check (b) confirms the receivable engine preserves value on every ex-date. Both are re-run after the changes below: 903 of 903 securities and 8,128 of 8,128 events pass.
 
-2. **`mergers.csv`: 24 ratios filled, 10 to review.**
-   - Seeding: the 82 Nifty 500 members that stopped trading, plus 2 merger announcements.
-   - The 24 filled ratios are published scheme ratios entered by hand. Each was accepted only if it is within 4% of the price-implied ratio (the parent's last close ÷ the acquirer's close). Examples: HDFC 42/25 against 1.668 implied; the 2020 PSU bank mergers within 3.2%.
-   - 10 rows are marked REVIEW because the ratio couldn't be confirmed from prices: ABIRLANUVO, GRUH, ALBK, EQUITAS, UJJIVAN, TV18BRDCST, CAIRN (preference-share component), PEL, DISHMAN, DALMIABHA.
-   - Until a REVIEW row is filled, the stock counts as *unknown*: after 60 trading days it is treated as delisted, at 50% of its last close.
-   - **Please check the 24 filled ratios and fill or confirm the 10 REVIEW rows.** `nsebt mergers --check` prints each ratio next to its price-implied value.
+2. **Merger ratios: verified and corrected.** Every filled row in `mergers.csv` now cites its source, an NSE filing or, for 6 rows, the company's or press record-date notice.
+   - **One error fixed:** ANDHRABANK is 325/1000 (Union Bank's gazette scheme), not 324/1000.
+   - **The 10 REVIEW rows resolved from filings:**
 
-3. **54 stopped Nifty 500 members are unexplained.**
-   - NSE's delisted list ends in November 2020 and its suspension list in 2012, so only 4 members match the delisted list.
-   - The other 54 are classed `unknown` (an asterisk marks a REVIEW merger row):
+     | Parent | Acquirer | Ratio |
+     |---|---|---|
+     | ABIRLANUVO | Grasim | 15/10 |
+     | GRUH | Bandhan | 568/1000 |
+     | ALBK | Indian Bank | 115/1000 |
+     | EQUITAS | Equitas SFB | 231/100 |
+     | UJJIVAN | Ujjivan SFB | 116/10 |
+     | TV18BRDCST | Network18 | 100/172 |
+     | CAIRN | Vedanta | 1 + ₹40 cash (four ₹10 preference shares, cash exit at par) |
+     | PEL | Piramal Finance | 1 |
+     | DISHMAN | DCAL | 1 |
+     | DALMIABHA | Dalmia Bharat | 2 |
 
-     CAIRN\*, DISHMAN\*, ABIRLANUVO\*, TUBEINVEST, TECHNO, DALMIABHA\*, AMTEKAUTO, EXCELCROP, MONSANTO, GRUH\*, RUCHISOYA, ESSDEE, ALOKTEXT, ALBK\*, MAXINDIA, MANPASAND, LAKSHVILAS, KSK, KWALITY, GLOBOFFS, DHFL, VIDEOIND, CASTEXTECH, GDL, COX&KINGS, NITINFIRE, SUPPETRO, JMTAUTOLTD, PUNJLLOYD, BRFL, EQUITAS\*, SINTEX, JPINFRATEC, JSLHISAR, SPICEJET, BALLARPUR, RNAVAL, SREINFRA, JBFIND, RELCAPITAL, UJJIVAN\*, SPTL, FRETAIL, TV18BRDCST\*, JETAIRWAYS, EROSMEDIA, PEL\*, DHANI, ACLGATI, ROLTA, JPASSOCIAT, GSPL, JBCHEPHARM, FCONSUMER.
+   - **Price checks:** the price-implied ratios differ by more than 4% for some rows. Each case is explained by a listing delay, a holding-company discount, or the acquirer's same-day demerger (ACLGATI → Allcargo).
+   - **Engine changes:**
+     - A conversion can have several components plus cash: Max India → Max Healthcare + new Max India; Tube Investments → TI Financial Holdings + new Tube Investments.
+     - Converted shares are not entitled to the acquirer's own corporate actions on the conversion day.
+     - Acquirers outside the Nifty 500 are loaded as non-members, so converted holdings can be held and sold (`load_panel(extra=…)`).
 
-   - Some are probably ISIN or symbol changes that the store didn't link (TUBEINVEST, RUCHISOYA, SPICEJET); others are recent schemes (GSPL, JBCHEPHARM).
-   - **Accept the default (60-day grace, then 50% haircut), or tell me which are mergers or relistings.**
+3. **The 54 unexplained members: resolved, 0 unknown remain.**
+   - **25 are conversions.** These include 5 capital-reduction relistings under a new ISIN that the store hadn't linked: RUCHISOYA → RUCHI (100:1), ALOKTEXT → ALOKINDS (1:1), SUPPETRO → SPLPETRO (1:1 + ₹6 refund), RNAVAL → SWANDEF (275:1), TUBEINVEST → TIFIN.
+   - **22 delisted,** recorded in `lifecycle_overrides.csv` with sources:
+     - 17 at a stated value: ₹0 where the equity was extinguished, as with DHFL, SINTEX, RELCAPITAL, SREINFRA, JPASSOCIAT, LAKSHVILAS and the liquidations; ₹0.10 for AMTEKAUTO.
+     - 5 under the delisting policy, because no payout is stated: COX&KINGS, ESSDEE, MANPASAND, GLOBOFFS, SPICEJET.
+   - **7 suspended, still in insolvency** at the data end: VIDEOIND, JBFIND, BRFL, FRETAIL, FCONSUMER, EROSMEDIA, BALLARPUR. These are held at the last close, as amendment 2.4 requires.
+   - **Assumptions:**
+     - Liquidations, and ROLTA (shares extinguished, no payment stated), are valued at ₹0.
+     - AMTEKAUTO's ₹0.10 is a ₹2.5 crore aggregate divided by an approximate public share count.
+     - SPICEJET kept trading on BSE.
 
 4. **40 corporate-action rows have no effective date**, not the 9 the spec states. All are ex-dates after the data ends, except a few that predate it. None is applied. If a held position passes one of these ex-dates, the run logs a warning.
 
@@ -148,3 +161,4 @@ The checks are proven to detect errors. Mutation tests fail as expected when an 
 | `eligibility.adv_days` | 20 |
 | `eligibility.on_universe_exit` | `hold` |
 | `paths.mergers` | `mergers.csv` (also added to the backup list) |
+| `paths.lifecycle_overrides` | `lifecycle_overrides.csv` (also added to the backup list) |

@@ -85,6 +85,9 @@ class Event:
     approx: bool            # value is theoretical or price-implied, not a known cash amount
     to_j: int = -1          # merger: acquirer column (-1 = not in the market)
     ratio: float = float("nan")   # merger: acquirer shares per parent share
+    extra: tuple = ()       # merger: further components ((acquirer column, ratio), ...)
+    cash: float = 0.0       # merger: ₹ per parent share received besides shares
+    value: float = float("nan")   # delisting: ₹ per share received, when a source states it
 
     @property
     def is_share(self) -> bool:
@@ -161,15 +164,19 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
     first, last = dates[0], dates[-1]
     ids = pd.Index(ids)
     if mergers is not None and len(mergers):
-        jj, to = ids.get_indexer(mergers["parent"]), ids.get_indexer(mergers["acquirer"])
-        for r, j, k in zip(mergers.itertuples(index=False), jj, to):
-            eff = pd.Timestamp(r.effective_date)
+        for parent, g in mergers.groupby("parent", sort=False):
+            j = ids.get_indexer([parent])[0]
+            eff = pd.Timestamp(g["effective_date"].iloc[0])
             if j < 0 or eff <= first or eff > last:
                 continue
             t = int(dates.searchsorted(eff, side="left"))
-            events.setdefault(t, []).append(Event(t, int(j), "merger", float("nan"), 0.0, eff,
-                                                  f"{r.ratio:g} {r.acquirer} per share", False,
-                                                  int(k), float(r.ratio)))
+            to = ids.get_indexer(g["acquirer"])
+            parts = list(zip(to.tolist(), g["ratio"].astype(float).tolist()))
+            cash = float(g["cash"].sum()) if "cash" in g else 0.0
+            detail = " + ".join(f"{r:g} {a}" for a, r in zip(g["acquirer"], g["ratio"])) + " per share" \
+                + (f" + Rs {cash:g} cash" if cash else "")
+            events.setdefault(t, []).append(Event(t, int(j), "merger", float("nan"), 0.0, eff, detail, False,
+                                                  int(parts[0][0]), parts[0][1], tuple(parts[1:]), cash))
     if lifecycle is not None and len(lifecycle):
         # delisted: exit on the first day after the last trade; unknown: after the grace period
         lc = lifecycle[lifecycle["cls"].isin(["delisted", "unknown"]) & lifecycle["effective_date"].notna()]
@@ -178,9 +185,11 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
             if j < 0 or eff <= first or eff > last:
                 continue
             t = int(dates.searchsorted(eff, side="left")) + (unknown_grace_days if r.cls == "unknown" else 0)
+            v = getattr(r, "value", float("nan"))
+            v = float(v) if v is not None and pd.notna(v) else float("nan")
             if t < len(dates):
                 events.setdefault(t, []).append(Event(t, int(j), "delisting", float("nan"), 0.0, eff, r.cls,
-                                                      r.cls == "unknown"))
+                                                      r.cls == "unknown", value=v))
     if ca is None or not len(ca):
         for t in events:
             events[t].sort(key=lambda e: (e.j, e.order))
