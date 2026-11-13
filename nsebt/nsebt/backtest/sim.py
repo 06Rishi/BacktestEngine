@@ -20,6 +20,7 @@ import pandas as pd
 
 from .account import Account
 from .costs import Charges, CostModel, DPTracker
+from .eligibility import UNIVERSE_EXIT, rolling_adv
 from .ledger import Event, LedgerConfig, delisting_value, parse_rights, schedule, split_shares
 
 REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired")
@@ -41,6 +42,7 @@ class Market:
     actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
     mergers: pd.DataFrame | None = None   # mergers.load(): parent, effective_date, acquirer, ratio
     lifecycle: pd.DataFrame | None = None # lifecycle.parquet: delisted / unknown securities exit by policy
+    members: np.ndarray | None = None     # bool (D, N) point-in-time membership (for on_universe_exit)
 
     @classmethod
     def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20,
@@ -52,7 +54,7 @@ class Market:
         if turnover is None:        # no turnover given: liquidity never binds
             adv = pd.DataFrame(np.inf, index=idx, columns=cols)
         else:
-            adv = turnover.reindex(index=idx, columns=cols).rolling(adv_days, min_periods=adv_days).mean()
+            adv = rolling_adv(turnover.reindex(index=idx, columns=cols), adv_days)
         prev = close.ffill().shift(1)
         return cls(idx, cols, al(open_), al(high), al(low), close.to_numpy(float),
                    adv.to_numpy(float), al(prev), actions, mergers, lifecycle)
@@ -60,8 +62,11 @@ class Market:
     @classmethod
     def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None,
                    mergers: pd.DataFrame | None = None, lifecycle: pd.DataFrame | None = None) -> "Market":
-        return cls.from_frames(panel.raw_open, panel.raw_high, panel.raw_low, panel.raw_close,
-                               panel.turnover, adv_days, actions, mergers, lifecycle)
+        m = cls.from_frames(panel.raw_open, panel.raw_high, panel.raw_low, panel.raw_close,
+                            panel.turnover, adv_days, actions, mergers, lifecycle)
+        if panel.members is not None:
+            m.members = panel.members.reindex(index=m.dates, columns=m.ids).fillna(False).to_numpy(bool)
+        return m
 
     def locked(self, t: int, j: int) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
@@ -104,6 +109,11 @@ class SimConfig:
     seed: int = 0
     buy_order_ttl_days: int = 1                 # unfilled buys are cancelled after this many days
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
+    on_universe_exit: str = "hold"              # hold | sell (amendment 2.5): sell at the next open on removal
+
+    def __post_init__(self):
+        if self.on_universe_exit not in UNIVERSE_EXIT:
+            raise ValueError(f"on_universe_exit: '{self.on_universe_exit}' is not one of {list(UNIVERSE_EXIT)}")
     # unfilled sells (not traded, locked at the lower circuit) retry every day until filled
 
 
@@ -357,10 +367,13 @@ class Simulator:
 
     def _decide_exits(self, t):
         ex, mh = self.s.exit, self.s.max_hold_days
+        mem = self.m.members if self.cfg.on_universe_exit == "sell" else None
         for p in self.positions.values():
             if p.exit_reason:
                 continue
-            if ex is not None and ex[t, p.j]:
+            if mem is not None and not mem[t, p.j]:
+                p.exit_reason, p.exit_signal_t = "universe exit", t
+            elif ex is not None and ex[t, p.j]:
                 p.exit_reason, p.exit_signal_t = "exit rule", t
             elif mh is not None and t - p.entry_t + 1 >= mh:
                 p.exit_reason, p.exit_signal_t = "max hold", t

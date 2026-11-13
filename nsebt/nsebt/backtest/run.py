@@ -111,7 +111,7 @@ def resolve(signals: Signals, cfg: SimConfig, market: Market, strategy: str = "u
         "costs": asdict(cfg.costs),
         "sim": {"buy_order_ttl_days": cfg.buy_order_ttl_days, "max_hold_days": signals.max_hold_days,
                 "sizing": asdict(signals.sizing), "strategy_max_positions": signals.max_positions,
-                "ledger": asdict(cfg.ledger)},
+                "ledger": asdict(cfg.ledger), "on_universe_exit": cfg.on_universe_exit},
         "universe": universe,
         "start": market.dates[0].date().isoformat(),
         "end": market.dates[-1].date().isoformat(),

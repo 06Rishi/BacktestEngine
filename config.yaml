@@ -73,3 +73,10 @@ corporate_actions:
   merger: convert_then_sell      # convert_then_sell | convert_and_hold
   delisting: haircut(50)         # haircut(N) | last_close | zero: share of the last close received
   unknown_grace_days: 60         # trading days an unexplained stop is held, then treated as delisted
+
+eligibility:
+  # Entry eligibility (amendment A4) and index removal (2.5). Data up to the decision close only.
+  min_price: 10.0                # ₹, raw close
+  min_adv: 10000000.0            # ₹ 1 crore, average traded value
+  adv_days: 20                   # sessions in the average (a session with no trade counts as zero)
+  on_universe_exit: hold         # hold | sell
