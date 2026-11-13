@@ -55,14 +55,22 @@ class Item:
     col: int
     quoted: bool = False
     flow: bool = False        # an item of a [a, b] flow list (YAML splits it at commas)
+    exact: bool = True        # single-line value: columns inside it map to the file
 
 
 def _plain(node, file):
     """YAML node -> python, with every scalar wrapped in Item (1-based line/col)."""
     if isinstance(node, yaml.ScalarNode):
-        v = yaml.safe_load(yaml.serialize(node)) if node.tag != "tag:yaml.org,2002:str" else node.value
+        if node.tag == "tag:yaml.org,2002:str":
+            v = node.value
+        elif node.tag == "tag:yaml.org,2002:null":
+            v = None
+        else:
+            v = yaml.constructor.SafeConstructor().construct_object(node)
         quoted = node.style in ("'", '"')
-        return Item(v, node.start_mark.line + 1, node.start_mark.column + 1 + (1 if quoted else 0), quoted)
+        exact = node.start_mark.line == node.end_mark.line and node.style not in ("|", ">", '"')
+        return Item(v, node.start_mark.line + 1, node.start_mark.column + 1 + (1 if quoted else 0), quoted,
+                    exact=exact)
     if isinstance(node, yaml.SequenceNode):
         items = [_plain(x, file) for x in node.value]
         if node.flow_style:
@@ -151,6 +159,8 @@ class YamlStrategy(Strategy):
                     raise ValueError
                 v = int(s)
             else:
+                if not re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", s):
+                    raise ValueError
                 v = float(s)
         except ValueError:
             kind = "true or false" if isinstance(d, bool) else "a whole number" if isinstance(d, int) else "a number"
@@ -169,7 +179,7 @@ class YamlStrategy(Strategy):
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k):
                 raise SpecError(f"parameter name '{k}' is not a valid name", self.file, ki.line, ki.col)
             v = vi.value
-            if not isinstance(v, (int, float, bool)) or isinstance(v, str):
+            if v is None or not isinstance(v, (int, float, bool)) or isinstance(v, str):
                 raise SpecError(f"parameter '{k}' must default to a number or true/false", self.file, vi.line, vi.col)
             out[k] = v
         return out
@@ -185,6 +195,8 @@ class YamlStrategy(Strategy):
                 raise SpecError(f"missing required key '{key}'", self.file)
             return None
         _, vi = self._root[key]
+        if vi.value is None and not required:
+            return None
         if not isinstance(vi.value, str) or not vi.value.strip():
             self._fail("must be text", key)
         return vi.value.strip()
@@ -199,10 +211,12 @@ class YamlStrategy(Strategy):
         return v
 
     def _parse(self, item: Item) -> Parsed:
+        if item.value is None:
+            raise SpecError("empty value: expected an expression", self.file, item.line, item.col)
         if not isinstance(item.value, (str, int, float)) or isinstance(item.value, bool):
             raise SpecError("expected an expression", self.file, item.line, item.col)
         try:
-            return parse(str(item.value), Where(self.file, item.line, item.col))
+            return parse(str(item.value), Where(self.file, item.line, item.col, item.exact))
         except ExprError as e:
             hint = ("; in a [a, b] list YAML splits at commas, so quote expressions that contain commas "
                     "or use a '- ' list" if item.flow and not item.quoted else "")
@@ -267,32 +281,46 @@ class YamlStrategy(Strategy):
                     bad = f"unknown parameter ${n.name}; declared: {', '.join(sorted(self.params)) or 'none'}"
                 if bad:
                     line, col = p.where.at(n.pos)
+                    if not p.where.exact:
+                        bad += " (in the multi-line value starting here)"
                     raise SpecError(bad, self.file, line, col)
 
     def lints(self) -> list[str]:
-        return [w for p in self.parsed() for w in lint(p)]
+        out = [w for p in self.parsed() for w in lint(p)]
+        for k in ("stop_loss", "take_profit", "trailing_stop"):
+            p = self.exprs.get(k)
+            if p is not None and not any(isinstance(n, (Name, Call)) for n in walk(p.tree)):
+                line, col = p.where.at(0)
+                out.append(f"{self.file}:{line}:{col}: warning: {k} is a constant price distance in rupees of "
+                           f"adjusted price, not a fraction; for a percentage write e.g. 0.05 * close")
+        return out
 
     # ------------------------------------------------------------------ the interface
     def generate(self, ctx: Context) -> Output:
         e = Evaluator(ctx, self.params)
-        oks = []
+        oks = []                  # A1 warm-up: what an entry decision reads (entry, rank, stop distances)
 
-        def evaluate(p):
+        def evaluate(p, warm=True):
             try:
                 v = e.evaluate(p)
             except ExprError as x:
                 raise SpecError(x.msg, self.file, x.line, x.col) from None
-            oks.append(v.ok)
+            if warm:
+                oks.append(v.ok)
             return v
 
-        def cond(c):
+        def cond(c, warm=True):
             if c.kind == "expr":
-                v = evaluate(c.expr)
+                v = evaluate(c.expr, warm)
                 if not isinstance(v.v, pd.DataFrame):
                     line, col = c.expr.where.at(c.expr.tree.pos)
                     raise SpecError("a condition must depend on the data (it is a constant)", self.file, line, col)
-                return e._bool(v)
-            parts = [cond(x) for x in c.items]
+                if not v.v.dtypes.apply(lambda d: d == bool).all():
+                    line, col = c.expr.where.at(c.expr.tree.pos)
+                    raise SpecError("a condition must be true/false (e.g. rsi(14) < 30), not a number",
+                                    self.file, line, col)
+                return e.truth(v)
+            parts = [cond(x, warm) for x in c.items]
             out = parts[0]
             for x in parts[1:]:
                 out = (out & x) if c.kind == "all" else (out | x)
@@ -301,7 +329,7 @@ class YamlStrategy(Strategy):
         close = ctx.panel.close
         idx, cols = close.index, close.columns
         entry = cond(self.entry)
-        exit_ = cond(self.exit) if self.exit else None
+        exit_ = cond(self.exit, warm=False) if self.exit else None
         frames = {k: evaluate(p).v for k, p in self.exprs.items()}
         reb = rebalance_days(idx, self.rebalance)
         on = reb.to_numpy()[:, None]
@@ -309,18 +337,29 @@ class YamlStrategy(Strategy):
         if exit_ is not None:
             exit_ = exit_.reindex(index=idx, columns=cols).fillna(False).astype(bool) & on
 
+        notes = []
+
         def dist(k):
             if k not in frames:
                 return None
             v = frames[k]
-            return (v / close) if isinstance(v, pd.DataFrame) else close * 0 + v / close
+            f = (v / close) if isinstance(v, pd.DataFrame) else close * 0 + v / close
+            bad = int(((f <= 0) & f.notna()).to_numpy().sum())
+            if bad:
+                notes.append(f"{k} is zero or negative on {bad:,} security-days; those entries get no {k}")
+            return f
         score = frames.get("rank")
         if score is not None and not isinstance(score, pd.DataFrame):
             score = None                                   # a constant rank orders nothing
         return Output(entry=entry, exit=exit_, score=score, stop=dist("stop_loss"), target=dist("take_profit"),
                       trail=dist("trailing_stop"), warmup=warmup(oks, idx, cols, self.warmup_buffer),
                       max_hold_days=self.max_hold_days, sizing=self.sizing, max_positions=self.max_positions,
-                      notes=tuple(self.lints()) + tuple(e.notes))
+                      notes=tuple(self.lints()) + tuple(e.notes) + tuple(notes))
+
+    def dry_run(self) -> Output:
+        """Evaluate every expression on a small synthetic panel: catches errors only data reveals
+        (bad indicator parameters, shift by a $param < 1, rank of a constant)."""
+        return self.generate(Context(synthetic_panel(), self.params))
 
     def source(self) -> str:
         over = "".join(f"\n# --set {k}={v}" for k, v in sorted(self.overrides.items()))
@@ -343,3 +382,20 @@ def parse_sets(items) -> dict:
             raise SpecError(f"--set {k.strip()}: given twice")
         out[k.strip()] = v.strip()
     return out
+
+
+def synthetic_panel(n: int = 320, k: int = 4, seed: int = 0):
+    """A small random panel with every field the language can read (for dry runs)."""
+    import numpy as np
+    from ..data import Panel
+    rng = np.random.default_rng(seed)
+    days = pd.bdate_range("2015-01-01", periods=n)
+    ids = [f"S{i}" for i in range(k)]
+    c = pd.DataFrame(100 * np.exp(np.cumsum(rng.normal(0, 0.02, (n, k)), axis=0)), index=days, columns=ids)
+    v = pd.DataFrame(rng.uniform(1e5, 1e6, (n, k)), index=days, columns=ids)
+    f = {"close": c, "open": c.shift(1).fillna(c), "high": c * 1.01, "low": c * 0.99, "vwap": c, "volume": v,
+         "deliv_qty": v * 0.4, "raw_close": c, "raw_open": c, "raw_high": c * 1.01, "raw_low": c * 0.99,
+         "raw_volume": v, "turnover": v * c, "deliv_pct": c * 0 + 40.0}
+    sec = pd.DataFrame({"SecurityID": ids, "Industry": [None] * k})
+    idx = pd.DataFrame({"Date": days, "Index": "Nifty 500", "Close": c.mean(axis=1).to_numpy()})
+    return Panel(f, pd.DataFrame(True, index=days, columns=ids), sec, idx)

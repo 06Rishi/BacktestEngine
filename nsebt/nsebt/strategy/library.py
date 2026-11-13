@@ -17,6 +17,8 @@ class Momentum(Strategy):
         mom = ctx.indicator("momentum_12_1", lookback=p["lookback"], skip=p["skip"])
         close = ctx.panel.close
         r = rank_desc(mom, ctx.members & close.notna())
-        top = (r <= p["top_n"]) & mom.notna()
+        defined = mom.notna()
+        top = (r <= p["top_n"]) & defined
         on = rebalance_days(close.index, "monthly").to_numpy()[:, None]
-        return Output(entry=top & on, exit=~top & on, score=mom, warmup=mom.notna().cummax())
+        # out of the top (or no longer a ranked member) on a day its momentum is defined: sell
+        return Output(entry=top & on, exit=~top & defined & on, score=mom, warmup=defined.cummax())

@@ -37,9 +37,10 @@ class Where:
     file: str = "<expr>"
     line: int = 1            # 1-based line of the expression's first character in the file
     col: int = 1             # 1-based column of the expression's first character in the file
+    exact: bool = True       # False for multi-line YAML values: positions point at the value's start
 
     def at(self, offset: int) -> tuple[int, int]:
-        return self.line, self.col + offset
+        return (self.line, self.col + offset) if self.exact else (self.line, self.col)
 
 
 class ExprError(ValueError):
@@ -47,6 +48,9 @@ class ExprError(ValueError):
         self.msg, self.where, self.offset = msg, where, offset
         line, col = where.at(offset)
         self.line, self.col = line, col
+        if not where.exact:
+            msg = f"{msg} (in the multi-line value starting here)"
+            self.msg = msg
         super().__init__(f"{where.file}:{line}:{col}: {msg}")
 
 

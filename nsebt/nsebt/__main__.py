@@ -320,6 +320,13 @@ def cmd_strategy(a):
           f"sizing {st.sizing.mode}{'' if st.sizing.value is None else f'({st.sizing.value:g})'}")
     for w in st.lints():
         print(w)
+    try:
+        dry = st.dry_run()
+    except spec.SpecError as e:
+        sys.exit(f"error: {e}")
+    for n in dry.notes:
+        if n not in st.lints():
+            print("note (synthetic data):", n)
     if a.sample:
         import pandas as pd
         from .data import load_panel
@@ -327,7 +334,8 @@ def cmd_strategy(a):
         cfg = _cfg(a)
         store = cfg.path("store")
         mem = pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna().unique()
-        p = load_panel(store, sorted(mem)[: a.sample], end=cfg.raw.get("research", {}).get("holdout_start"))
+        end = pd.Timestamp(cfg.raw.get("research", {}).get("holdout_start", "2022-01-01")) - pd.Timedelta(days=1)
+        p = load_panel(store, sorted(mem)[: a.sample], end=end)       # strictly before the holdout
         try:
             out = st.generate(Context(p, st.params))
         except spec.SpecError as e:

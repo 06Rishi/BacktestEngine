@@ -56,6 +56,13 @@ class Value:
         return isinstance(self.v, pd.DataFrame)
 
 
+def _is_cond(x) -> bool:
+    v = x.v
+    if isinstance(v, pd.DataFrame):
+        return bool(len(v.columns)) and v.dtypes.apply(lambda d: d == bool).all()
+    return isinstance(v, (bool, np.bool_))
+
+
 def _and(a, b):
     if a is True:
         return b
@@ -109,11 +116,28 @@ class Evaluator:
             return -self._const(node.x, what)
         if isinstance(node, Bin):
             a, b = self._const(node.a, what), self._const(node.b, what)
-            return {"+": a + b, "-": a - b, "*": a * b, "/": a / b if b else float("nan")}[node.op]
+            if node.op == "/" and not b:
+                raise self._err("division by zero in a constant expression", node)
+            return {"+": a + b, "-": a - b, "*": a * b, "/": a / b if b else 0.0}[node.op]
+        if isinstance(node, Call) and node.name in ("abs", "min", "max") and not node.kwargs:
+            vals = [self._const(x, what) for x in node.args]
+            if node.name == "abs" and len(vals) == 1:
+                return abs(vals[0])
+            if node.name in ("min", "max") and len(vals) == 2:
+                return min(vals) if node.name == "min" else max(vals)
         raise self._err(f"expected {what} (a number or $param)", node)
+
+    def _is_const(self, node) -> bool:
+        try:
+            self._const(node, "a constant")
+            return True
+        except ExprError:
+            return False
 
     def _int(self, node, what, minimum=1) -> int:
         v = self._const(node, what)
+        if isinstance(v, (bool, np.bool_)):
+            raise self._err(f"{what} must be a number, not true/false", node)
         if not float(v).is_integer() or v < minimum:
             raise self._err(f"{what} must be a whole number >= {minimum}, got {v:g}", node)
         return int(v)
@@ -132,9 +156,16 @@ class Evaluator:
             return Value(f, f.notna())
         if isinstance(n, Neg):
             x = self._eval(n.x)
+            if _is_cond(x):
+                raise self._err("can't negate a condition with '-'; use 'not'", n)
             return Value(-x.v, x.ok)
         if isinstance(n, Bin):
             a, b = self._eval(n.a), self._eval(n.b)
+            for side, node in ((a, n.a), (b, n.b)):
+                if _is_cond(side):
+                    raise self._err(f"arithmetic '{n.op}' on a condition (true/false); compare numbers instead", node)
+            if n.op == "/" and not isinstance(b.v, pd.DataFrame) and not b.v:
+                raise self._err("division by zero", n)
             if n.op == "/":
                 v = a.v / b.v
                 if isinstance(v, pd.DataFrame):
@@ -156,17 +187,34 @@ class Evaluator:
             return Value(v, ok)
         if isinstance(n, BoolOp):
             vals = [self._eval(x) for x in n.items]
-            v, ok = self._bool(vals[0]), vals[0].ok
+            for x, node in zip(vals, n.items):
+                if not _is_cond(x):
+                    raise self._err(f"'{n.op}' joins conditions; this is a number (compare it with something)", node)
+            v, ok = self.truth(vals[0]), vals[0].ok
             for x in vals[1:]:
-                v = (v & self._bool(x)) if n.op == "and" else (v | self._bool(x))
+                v = (v & self.truth(x)) if n.op == "and" else (v | self.truth(x))
                 ok = _and(ok, x.ok)
             return Value(v, ok)
         if isinstance(n, Not):
+            # True only where the operand is defined and false: missing data never satisfies 'not'
             x = self._eval(n.x)
-            return Value(~self._bool(x), x.ok)
+            if not _is_cond(x):
+                raise self._err("'not' needs a condition; this is a number (compare it with something)", n.x)
+            b = self._bool(x)
+            if isinstance(b, pd.DataFrame):
+                ok = x.ok if isinstance(x.ok, pd.DataFrame) else True
+                return Value(~b & ok, x.ok)
+            return Value(not b, x.ok)
         if isinstance(n, Call):
             return self._call(n)
         raise self._err("unsupported expression", n)        # pragma: no cover
+
+    def truth(self, x: Value):
+        """A value used as a condition: True only where it is defined and true."""
+        b = self._bool(x)
+        if isinstance(b, pd.DataFrame) and isinstance(x.ok, pd.DataFrame):
+            return b & x.ok
+        return b
 
     def _bool(self, x: Value):
         v = x.v
@@ -195,7 +243,7 @@ class Evaluator:
         names = list(spec.params)
         args = list(n.args)
         series = None
-        if args and any(isinstance(x, (Name, Call)) for x in walk(args[0])):
+        if args and not self._is_const(args[0]):
             if len(spec.inputs) != 1:
                 raise self._err(f"{name} reads {', '.join(spec.inputs)}; it can't take a series argument", args[0])
             series = self._eval(args[0])
@@ -214,6 +262,10 @@ class Evaluator:
                 raise self._err(f"{name}: parameter '{k}' given twice", a)
             params[k] = self._const(a, f"{name} parameter '{k}'")
         for k, v in params.items():
+            if isinstance(v, (bool, np.bool_)):
+                raise self._err(f"{name} parameter '{k}' must be a number, not true/false", n)
+            if isinstance(spec.params.get(k), float):
+                params[k] = float(v)
             if isinstance(spec.params.get(k), int) and not isinstance(spec.params.get(k), bool):
                 if not float(v).is_integer() or v < 1:
                     raise self._err(f"{name} parameter '{k}' must be a whole number >= 1", n)
@@ -319,6 +371,46 @@ def _input_field(call: Call) -> str | None:
     return "high" if call.name == "highest" else "low"
 
 
+LEVEL_FUNCS = {"sma", "ema", "highest", "lowest", "prior_high", "prior_low", "atr", "vwap",
+               "bollinger_mid", "bollinger_upper", "bollinger_lower", "keltner_mid", "keltner_upper", "keltner_lower"}
+
+
+def _constant(node) -> bool:
+    return all(isinstance(x, (Num, Param, Neg, Bin)) or (isinstance(x, Call) and x.name in ("abs", "min", "max"))
+               for x in walk(node))
+
+
+def _level(node) -> str | None:
+    """The adjusted price or volume level an expression measures, if it is one (not a ratio)."""
+    if isinstance(node, Name) and node.name in ADJ_PRICES + ("volume", "deliv_qty"):
+        return node.name
+    if isinstance(node, Call) and node.name in LEVEL_FUNCS:
+        return node.name + "()"
+    if isinstance(node, Neg):
+        return _level(node.x)
+    if isinstance(node, Bin) and node.op in "+-":
+        return _level(node.a) or _level(node.b)
+    if isinstance(node, Bin) and node.op == "*":
+        if _constant(node.a):
+            return _level(node.b)
+        if _constant(node.b):
+            return _level(node.a)
+    if isinstance(node, Bin) and node.op == "/" and _constant(node.b):
+        return _level(node.a)
+    return None
+
+
+def _scaled(node):
+    """(multiplier, call) for highest/lowest(...) optionally times a numeric literal."""
+    if isinstance(node, Call) and node.name in ("highest", "lowest"):
+        return 1.0, node
+    if isinstance(node, Bin) and node.op == "*":
+        for k, c in ((node.a, node.b), (node.b, node.a)):
+            if isinstance(k, Num) and isinstance(c, Call) and c.name in ("highest", "lowest"):
+                return k.value, c
+    return None
+
+
 def lint(p: Parsed) -> list[str]:
     """Warnings (not errors), with file:line:col."""
     out = []
@@ -327,22 +419,30 @@ def lint(p: Parsed) -> list[str]:
         line, col = p.where.at(node.pos)
         out.append(f"{p.where.file}:{line}:{col}: warning: {msg}")
 
+    flip = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}
     for n in walk(p.tree):
         if not isinstance(n, Cmp):
             continue
-        for f, other, op in ((n.a, n.b, n.op), (n.b, n.a, {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(n.op, n.op))):
+        for f, other, op in ((n.a, n.b, n.op), (n.b, n.a, flip.get(n.op, n.op))):
             # A2: a price compared with an unshifted highest/lowest of the same or a containing field
-            if isinstance(f, Name) and f.name in ("open", "high", "low", "close") and isinstance(other, Call) \
-                    and other.name in ("highest", "lowest"):
-                x = _input_field(other)
-                if other.name == "highest" and op == ">" and x in ("high", f.name):
-                    warn(f"'{f.name} > highest({x}, n)' can never be true: highest() includes today; "
-                         f"use prior_high(n)", n)
-                if other.name == "lowest" and op == "<" and x in ("low", f.name):
-                    warn(f"'{f.name} < lowest({x}, n)' can never be true: lowest() includes today; "
-                         f"use prior_low(n)", n)
-            # A3: an adjusted price level compared with a constant
-            if isinstance(f, Name) and f.name in ADJ_PRICES and isinstance(other, (Num, Param)):
-                warn(f"adjusted '{f.name}' compared with a constant: adjusted levels change with later "
-                     f"splits and bonuses; use raw_{f.name} for price levels", n)
+            sc = _scaled(other)
+            if isinstance(f, Name) and f.name in ("open", "high", "low", "close") and sc:
+                k, call = sc
+                x = _input_field(call)
+                if call.name == "highest" and op in (">", ">=") and k >= 1 and x in ("high", f.name) \
+                        and (op == ">" or k > 1):
+                    warn(f"'{f.name} > {'' if k == 1 else f'{k:g} * '}highest({x}, n)' can never be true: "
+                         f"highest() includes today; use prior_high(n)", n)
+                if call.name == "lowest" and op in ("<", "<=") and k <= 1 and x in ("low", f.name) \
+                        and (op == "<" or k < 1):
+                    warn(f"'{f.name} < {'' if k == 1 else f'{k:g} * '}lowest({x}, n)' can never be true: "
+                         f"lowest() includes today; use prior_low(n)", n)
+        # A3: an adjusted price or volume level compared with a constant
+        for side, other in ((n.a, n.b), (n.b, n.a)):
+            lvl = _level(side)
+            if lvl and _constant(other):
+                raw = f"raw_{lvl}" if lvl in ADJ_PRICES else "a ratio or raw field"
+                warn(f"adjusted level '{lvl}' compared with a constant: adjusted levels change with later "
+                     f"splits and bonuses; use {raw}", n)
+                break
     return out
