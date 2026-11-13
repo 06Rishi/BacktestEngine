@@ -110,6 +110,8 @@ class SimConfig:
     buy_order_ttl_days: int = 1                 # unfilled buys are cancelled after this many days
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
     on_universe_exit: str = "hold"              # hold | sell (amendment 2.5): sell at the next open on removal
+    reconcile: bool = False   # validation only (amendment 2.6): every value event reinvested as shares ÷ factor,
+                              # fractional shares kept; reproduces the total-return adjusted series exactly
 
     def __post_init__(self):
         if self.on_universe_exit not in UNIVERSE_EXIT:
@@ -175,7 +177,7 @@ class Receivable:
 # --------------------------------------------------------------------------- simulator
 
 class Simulator:
-    def __init__(self, market: Market, signals: Signals, cfg: SimConfig = SimConfig()):
+    def __init__(self, market: Market, signals: Signals, cfg: SimConfig = SimConfig(), track: bool = False):
         self.m, self.s, self.cfg = market, signals, cfg
         D, N = market.close.shape
         for name in ("entry", "exit", "score", "stop", "target", "trail"):
@@ -206,6 +208,13 @@ class Simulator:
             if 0 < t < D:
                 self.unscheduled.setdefault(t, []).append((j, ex, kind, detail))
         self.in_lieu: list[tuple[Position, float]] = []   # fractional shares, paid at the ex-date close
+        self.injections: dict[int, list[tuple[int, float]]] = {}   # t -> [(j, shares)] added at t's close
+        # per-security tracking for reconciliation: value held at each close, value credited each day
+        self.track = track
+        if track:
+            self.hold = np.full((D, N), np.nan)
+            self.credit = np.zeros((D, N))
+            self.lieu = np.zeros((D, N), bool)
         self.receivables: list[Receivable] = []
         self.ledger_log: list[dict] = []
 
@@ -224,7 +233,7 @@ class Simulator:
         return sum(p.shares * p.last_close for p in self._held())
 
     def receivables_value(self) -> float:
-        return sum(r.amount for r in self.receivables)
+        return float(sum((r.amount for r in self.receivables), 0.0))
 
     def equity(self) -> float:
         """Cash + holdings + receivables. Buying power is cash only."""
@@ -356,14 +365,32 @@ class Simulator:
             self._sell(t, p, fill[0], fill[1], fill[2])
 
     # ----------------------------------------------------------------- close
+    def inject(self, t: int, j: int, shares: float):
+        """Hold `shares` of security j from the close of day t, at no cost (validation runs)."""
+        self.injections.setdefault(t, []).append((j, shares))
+
+    def _credit(self, t, j, amount, lieu=False):
+        if self.track:
+            self.credit[t, j] += amount
+            self.lieu[t, j] |= lieu
+
     def _mark(self, t):
         self._settle_in_lieu(t)
+        for j, n in self.injections.get(t, ()):
+            c = self.m.close[t, j]
+            if np.isfinite(c) and j not in self.positions:
+                self.positions[j] = Position(j=j, shares=n, entry_t=t, signal_t=t, entry_price=c,
+                                             buy_charges=Charges(0, 0, 0, 0, 0, 0), cost_basis=n * c,
+                                             last_close=c)
         for p in self._held():
             c = self.m.close[t, p.j]
             if np.isfinite(c):
                 p.last_close = c
                 if p.trail_frac is not None:
                     p.trail_ref = c if p.trail_ref is None else max(p.trail_ref, c)
+        if self.track:
+            for p in self._held():
+                self.hold[t, p.j] = p.shares * p.last_close
 
     def _decide_exits(self, t):
         ex, mh = self.s.exit, self.s.max_hold_days
@@ -467,7 +494,8 @@ class Simulator:
             else:
                 amount, due_t, how = self._value_event(t, pos, e)
             self.ledger_log.append({"date": self._date(t), "SecurityID": self._id(e.j), "kind": e.kind,
-                                    "detail": e.detail, "factor": e.factor, "shares_before": before,
+                                    "detail": e.detail, "factor": e.factor, "prev_close": self.m.prev_close[t, e.j],
+                                    "shares_before": before,
                                     "shares_after": pos.shares, "amount": amount, "treatment": how,
                                     "due_date": (self._date(due_t) if due_t is not None and due_t < len(self.m.dates)
                                                  else None if due_t is None else "after data end"),
@@ -489,12 +517,18 @@ class Simulator:
                 v = getattr(pos, name)
                 if v is not None:
                     setattr(pos, name, v * e.factor)
+        if self.cfg.reconcile:
+            if not np.isfinite(e.factor):
+                return 0.0, None, "no factor (not in the adjusted series)"
+            pos.shares /= e.factor
+            return 0.0, None, "reinvested"
         if e.kind in ("dividend", "special_dividend"):
             if L.dividends == "ignore":
                 return 0.0, None, "ignored"
             if L.dividends == "instant":
                 self.cash += amount
                 pos.income += amount
+                self._credit(t, pos.j, amount)
                 return amount, t, "cash"
             due = self._due_calendar(e, L.dividend_pay_lag_days)
             return self._receivable(pos, amount, due, e), due, "receivable"
@@ -516,6 +550,7 @@ class Simulator:
         if amount > 0:
             self.receivables.append(Receivable(amount, due_t, e.kind, e.j, e.approx))
             pos.income += amount
+            self._credit(e.t, e.j, amount)
         return amount
 
     def _subscribe(self, t, pos: Position, e: Event, due: int):
@@ -596,6 +631,11 @@ class Simulator:
 
     def _share_event(self, pos: Position, f: float):
         """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""
+        if self.cfg.reconcile:
+            pos.shares /= f
+            pos.last_close *= f
+            self._scale_levels(pos, f)
+            return
         whole, frac = split_shares(pos.shares, f)
         pos.shares = whole
         pos.last_close *= f
@@ -613,6 +653,7 @@ class Simulator:
             px = c if np.isfinite(c) else pos.last_close
             amount = frac * px
             self.cash += amount
+            self._credit(t, pos.j, amount, lieu=True)
             if pos.trade is not None:          # sold earlier today: add to that trade
                 tr = pos.trade
                 tr["income"] += amount

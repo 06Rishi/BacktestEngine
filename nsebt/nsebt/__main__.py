@@ -240,6 +240,57 @@ def cmd_lifecycle(a):
           .fillna(0).astype(int).to_string())
 
 
+def cmd_reconcile(a):
+    """Ledger-vs-adjusted reconciliation for every Nifty 500 security (amendment 2.6), plus speed."""
+    import time
+    import numpy as np
+    from .backtest import reconcile as rc
+    from .backtest.account import Account
+    from .backtest.sim import SimConfig, Signals, simulate
+    cfg = _cfg(a)
+    out = cfg.path("reports")
+    m, adj, t_load = rc.from_store(cfg.path("store"))
+    r = rc.reconcile(m, adj)
+    D, N = m.close.shape
+    rng = np.random.default_rng(0)
+    t0 = time.perf_counter()
+    simulate(m, Signals(entry=rng.random((D, N)) < 0.05, exit=rng.random((D, N)) < 0.02),
+             SimConfig(account=Account(capital=36_000, max_positions=3, max_position_pct=33)))
+    t_sim = time.perf_counter() - t0
+    r.summary.to_csv(out / "phase45_reconciliation_securities.csv", index=False)
+    r.failures.to_csv(out / "phase45_reconciliation_failures.csv", index=False)
+    r.preservation.to_csv(out / "phase45_reconciliation_events.csv", index=False)
+    kinds = r.preservation["kind"].value_counts().to_dict() if len(r.preservation) else {}
+    lines = [
+        "# Reconciliation: position ledger vs adjusted prices (amendment 2.6)", "",
+        f"Store version: {__import__('nsebt.backtest.run', fromlist=['store_version']).store_version(cfg.path('store'))}. "
+        f"Universe: every Nifty 500 member 2016-2026 ({N} securities, {D} days).", "",
+        "| Check | Result |", "|---|---|",
+        f"| (a) reinvest-equivalent: securities checked | {r.n} |",
+        f"| (a) securities with any day outside 1e-6 | {r.n_failed} ({r.fail_share:.2%}; stop rule S4 above 0.5%) |",
+        f"| (a) largest daily error | {r.summary['max_abs_err'].max():.1e} |",
+        f"| (a) security-days compared | {int(r.summary['days'].sum()):,} |",
+        f"| (b) receivable mode: value events checked | {len(r.preservation)} ({', '.join(f'{k} {v}' for k, v in kinds.items())}) |",
+        f"| (b) events outside 1e-6 | {r.b_failed} |",
+        f"| Value events with no factor (excluded) | {len(r.excluded)} |",
+        f"| Result | {'PASS' if r.passed else 'FAIL'} |", "",
+        "| Timing | Seconds |", "|---|---|",
+        f"| Load Nifty 500 panel (raw + total-return adjusted) | {t_load:.1f} |",
+        f"| Reinvest-equivalent run, all securities held | {r.seconds['reinvest_run']:.1f} |",
+        f"| Receivable-mode run, all securities held | {r.seconds['receivable_run']:.1f} |",
+        f"| One backtest, 3 positions, random signals, full costs | {t_sim:.1f} |",
+        f"| Single backtest including load (target ≤ 30) | {t_load + t_sim:.1f} |", "",
+        "Method and assumptions: see `nsebt/nsebt/backtest/reconcile.py`. (a) reinvests every value event as "
+        "shares ÷ factor, so it can match the total-return series exactly; the default engine holds dividends "
+        "as receivables, which drift from the reinvested series by about D/P × the next day's return, so it is "
+        "checked by (b), value preservation on each ex-date.",
+    ]
+    (out / "phase45_reconciliation.md").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    if not r.passed:
+        sys.exit(1)
+
+
 # --------------------------------------------------------------------------- research (legacy)
 
 def _legacy_load(a):
@@ -351,6 +402,9 @@ def main(argv=None):
     lc = sub.add_parser("lifecycle", help="classify securities that stopped trading (lifecycle.parquet)")
     lc.add_argument("--fetch", action="store_true", help="download NSE's delisted and suspension lists first")
     lc.set_defaults(fn=cmd_lifecycle)
+
+    rc_ = sub.add_parser("reconcile", help="reconcile the position ledger with adjusted prices (all securities)")
+    rc_.set_defaults(fn=cmd_reconcile)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")
