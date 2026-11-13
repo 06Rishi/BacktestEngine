@@ -100,8 +100,6 @@ def test_universe_exit_sell_exits_at_the_next_open():
 
 def test_config_validation_and_repo_block():
     with pytest.raises(ValueError, match="on_universe_exit"):
-        SimConfig(on_universe_exit="drop")
-    with pytest.raises(ValueError, match="on_universe_exit"):
         EligibilityConfig(on_universe_exit="drop")
     with pytest.raises(ValueError, match="unknown"):
         EligibilityConfig.from_config({"eligibility": {"min_adv_cr": 1}})

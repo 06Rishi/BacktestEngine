@@ -6,6 +6,12 @@ gives an identical run.
 
 The record schema is frozen (RUN_SCHEMA_VERSION). Adding or changing fields needs a
 new schema version and a migration of the ledger.
+
+v2 (Gate A review, approved by the user): adds `data_inputs` (hash of every input file: store
+build report, corporate actions, membership, lifecycle, mergers.csv, lifecycle_overrides.csv,
+ca_overrides.csv), `signals_hash` (every signal array and setting) and `strategy_source_hash`
+(the strategy's spec or code, from M3); the eligibility config and ADV window join the `sim` block;
+`git_dirty` now also counts untracked files that are not ignored.
 """
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ import pandas as pd
 
 from .sim import Market, Result, Signals, SimConfig, simulate
 
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
 
 
 def _jsonable(x):
@@ -51,7 +57,7 @@ def git_state(repo: Path | None = None) -> tuple[str, bool]:
     try:
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True,
                                 check=True).stdout.strip()
-        dirty = bool(subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo,
+        dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=repo,
                                     capture_output=True, text=True, check=True).stdout.strip())
         return commit, dirty
     except (OSError, subprocess.CalledProcessError):
@@ -83,6 +89,9 @@ class RunRecord:
     git_commit: str
     git_dirty: bool
     store_version: str
+    data_inputs: dict
+    signals_hash: str
+    strategy_source_hash: str
     config_hash: str
     n_trades: int
     final_equity: float
@@ -101,8 +110,30 @@ class Run:
     result: Result
 
 
+def signals_hash(signals: Signals) -> str:
+    """Hash of every signal array and signal setting."""
+    h = hashlib.sha256()
+    for name in ("entry", "exit", "score", "stop", "target", "trail", "warmup"):
+        a = getattr(signals, name)
+        h.update(name.encode())
+        if a is not None:
+            a = np.ascontiguousarray(a)
+            h.update(str(a.dtype).encode() + str(a.shape).encode() + a.tobytes())
+    h.update(json.dumps(_jsonable({"max_hold_days": signals.max_hold_days, "sizing": asdict(signals.sizing),
+                                   "max_positions": signals.max_positions}), sort_keys=True).encode())
+    return h.hexdigest()[:16]
+
+
+def source_hash(source) -> str:
+    if source is None:
+        return "none"
+    b = source if isinstance(source, bytes) else str(source).encode()
+    return hashlib.sha256(b).hexdigest()[:16]
+
+
 def resolve(signals: Signals, cfg: SimConfig, market: Market, strategy: str = "unnamed",
-            params: dict | None = None, universe: str = "custom", store: Path | None = None) -> dict:
+            params: dict | None = None, universe: str = "custom", store: Path | None = None,
+            strategy_source=None) -> dict:
     """Everything that determines the outcome, as plain data."""
     return {
         "strategy": strategy,
@@ -111,19 +142,23 @@ def resolve(signals: Signals, cfg: SimConfig, market: Market, strategy: str = "u
         "costs": asdict(cfg.costs),
         "sim": {"buy_order_ttl_days": cfg.buy_order_ttl_days, "max_hold_days": signals.max_hold_days,
                 "sizing": asdict(signals.sizing), "strategy_max_positions": signals.max_positions,
-                "ledger": asdict(cfg.ledger), "on_universe_exit": cfg.on_universe_exit},
+                "ledger": asdict(cfg.ledger), "eligibility": asdict(cfg.eligibility),
+                "market_adv_days": market.adv_days},
         "universe": universe,
         "start": market.dates[0].date().isoformat(),
         "end": market.dates[-1].date().isoformat(),
         "seed": cfg.seed,
         "store_version": store_version(store),
+        "data_inputs": dict(market.sources) or ({"note": "market not built by market.from_store"}),
+        "signals_hash": signals_hash(signals),
+        "strategy_source_hash": source_hash(strategy_source),
     }
 
 
 def run(market: Market, signals: Signals, cfg: SimConfig = SimConfig(), strategy: str = "unnamed",
         params: dict | None = None, universe: str = "custom", store: Path | None = None,
-        repo: Path | None = None) -> Run:
-    resolved = resolve(signals, cfg, market, strategy, params, universe, store)
+        repo: Path | None = None, strategy_source=None) -> Run:
+    resolved = resolve(signals, cfg, market, strategy, params, universe, store, strategy_source)
     h = config_hash(resolved)
     commit, dirty = git_state(repo)
     result = simulate(market, signals, cfg)
@@ -134,7 +169,9 @@ def run(market: Market, signals: Signals, cfg: SimConfig = SimConfig(), strategy
         created_utc=now.isoformat(timespec="seconds"),
         strategy=strategy, params=resolved["params"], account=resolved["account"], costs=resolved["costs"],
         sim=resolved["sim"], universe=universe, start=resolved["start"], end=resolved["end"], seed=cfg.seed,
-        git_commit=commit, git_dirty=dirty, store_version=resolved["store_version"], config_hash=h,
+        git_commit=commit, git_dirty=dirty, store_version=resolved["store_version"],
+        data_inputs=resolved["data_inputs"], signals_hash=resolved["signals_hash"],
+        strategy_source_hash=resolved["strategy_source_hash"], config_hash=h,
         n_trades=len(result.trades), final_equity=float(result.daily["equity"].iloc[-1]),
         warnings=tuple(result.config.get("warnings", ())),
     )

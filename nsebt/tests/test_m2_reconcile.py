@@ -153,3 +153,35 @@ def test_real_store_reconciliation_and_speed():
     simulate(m, Signals(entry=rng.random((D, N)) < 0.05, exit=rng.random((D, N)) < 0.02),
              SimConfig(account=Account(capital=36_000, max_positions=3, max_position_pct=33)))
     assert time.perf_counter() - t1 < 30 and time.perf_counter() - t0 < 60
+
+
+# --------------------------------------------------------------------------- (c) table vs prices, (d) full ledger
+
+def test_table_check_flags_a_factor_the_prices_contradict():
+    ca = pd.DataFrame({"SecurityID": ["A", "B"], "Symbol": ["A", "B"], "kind": ["rights", "bonus"],
+                       "factor": [1.0, 0.5], "applied": True, "effective_date": pd.to_datetime(["2020-01-02"] * 2),
+                       "prior_close": [29.0, 100.0], "ex_open": [17.95, 50.5], "ex_close": [18.25, 49.0]})
+    bad, n = rc.check_table(ca, ["A", "B"])
+    assert n == 2 and list(bad["Symbol"]) == ["A"]          # the IDEA-like rights row with factor 1.0
+
+
+def test_full_ledger_run_identity_holds():
+    m, _ = synthetic()
+    r, err, min_cash = rc.full_ledger_run(m, list(m.ids))
+    assert abs(err) < 1e-6 and min_cash > -1e-9 and len(r.ledger) >= 8
+
+
+@pytest.mark.skipif(not (STORE / "lifecycle.parquet").exists(), reason="store not built")
+def test_market_from_store_loads_everything_and_hashes_inputs():
+    from nsebt import config
+    from nsebt.backtest import market as mk
+    cfg_ = config.load(ROOT / "config.yaml")
+    m, panel = mk.from_store(cfg_, universe="nifty500", start="2023-06-01", end="2023-08-31")
+    assert m.mergers is not None and m.actions is not None and m.lifecycle is not None
+    assert set(m.sources) >= {"corporate_actions", "mergers_csv", "lifecycle", "lifecycle_overrides_csv",
+                              "ca_overrides_csv", "build_report"}
+    assert all(v != "missing" for v in m.sources.values())
+    assert panel.close.columns.equals(m.ids) and panel.close.index.equals(m.dates)
+    acq = set(m.mergers["acquirer"]) - set(pd.read_parquet(STORE / "membership.parquet")["SecurityID"])
+    j = [list(m.ids).index(a) for a in acq if a in m.ids]
+    assert j and not m.members[:, j].any()                  # acquirers loaded, never members

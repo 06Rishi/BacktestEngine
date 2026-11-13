@@ -29,7 +29,8 @@ def run(cfg: Config, skip_store: bool = False) -> dict:
     rep: dict = {}
 
     if not skip_store:
-        rep["store"] = nsestore.build(cfg.path("nse_raw"), store, cfg.path("nse_reference"))
+        rep["store"] = nsestore.build(cfg.path("nse_raw"), store, cfg.path("nse_reference"),
+                                      cfg.root / cfg.raw["paths"].get("ca_overrides", "ca_overrides.csv"))
         log.info("store built: %s rows, %s securities", rep["store"]["rows"], rep["store"]["securities"])
 
     nse = nsestore.load_prices(store, adjusted=True,
@@ -81,6 +82,12 @@ def run(cfg: Config, skip_store: bool = False) -> dict:
                                  n5[-1] if n5 else None, isin_to_sid)
     mem.to_parquet(store / "membership.parquet", index=False)
     rep["membership"] = mrep
+    # securities that stopped trading: reclassified on every build so it follows the data end
+    from . import lifecycle
+    lc = lifecycle.build(store, cfg.path("nse_reference"),
+                         cfg.root / cfg.raw["paths"].get("mergers", "mergers.csv"),
+                         cfg.root / cfg.raw["paths"].get("lifecycle_overrides", "lifecycle_overrides.csv"))
+    rep["lifecycle"] = lc["cls"].value_counts().to_dict()
     rep["seconds"] = round(time.monotonic() - t0, 1)
     (out / "phase1_summary.json").write_text(json.dumps(rep, indent=2, default=str))
     return rep

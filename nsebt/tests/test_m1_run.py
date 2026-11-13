@@ -52,11 +52,11 @@ def test_record_has_reproducibility_fields_and_is_json():
 
 def test_schema_is_frozen():
     # changing these fields needs a new RUN_SCHEMA_VERSION and a ledger migration
-    assert R.RUN_SCHEMA_VERSION == 1
+    assert R.RUN_SCHEMA_VERSION == 2
     assert R.RUN_FIELDS == (
         "schema_version", "run_id", "created_utc", "strategy", "params", "account", "costs", "sim",
-        "universe", "start", "end", "seed", "git_commit", "git_dirty", "store_version", "config_hash",
-        "n_trades", "final_equity", "warnings")
+        "universe", "start", "end", "seed", "git_commit", "git_dirty", "store_version", "data_inputs",
+        "signals_hash", "strategy_source_hash", "config_hash", "n_trades", "final_equity", "warnings")
 
 
 def test_store_version_tracks_build_report(tmp_path):
@@ -65,3 +65,20 @@ def test_store_version_tracks_build_report(tmp_path):
     v1 = R.store_version(tmp_path)
     (tmp_path / "build_report.json").write_text('{"a": 2}')
     assert R.store_version(tmp_path) != v1
+
+
+def test_hash_changes_with_signals_inputs_eligibility_and_strategy_source():
+    m, s = _mk()
+    base = R.run(m, s, cfg(seed=1)).record
+    s2 = sig(m, entries=[(0, 0)])
+    assert R.run(m, s2, cfg(seed=1)).record.config_hash != base.config_hash
+    assert R.run(m, s2, cfg(seed=1)).record.signals_hash != base.signals_hash
+    c = cfg(seed=1)
+    c.eligibility = type(c.eligibility)(min_price=5.0, min_adv=0.0, adv_days=1)
+    assert R.run(m, s, c).record.config_hash != base.config_hash
+    assert R.run(m, s, cfg(seed=1), strategy_source="a: 1").record.config_hash != base.config_hash
+    m.sources = {"mergers_csv": "abc"}
+    r1 = R.run(m, s, cfg(seed=1)).record
+    m.sources = {"mergers_csv": "abd"}
+    assert R.run(m, s, cfg(seed=1)).record.config_hash != r1.config_hash
+    assert r1.data_inputs == {"mergers_csv": "abc"}

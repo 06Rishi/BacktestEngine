@@ -221,3 +221,33 @@ def test_unconfirmed_bonus_not_applied_and_same_day_demerger_not_double_counted(
     total = ev.loc[("X", "bonus"), "factor"] * ev.loc[("X", "arrangement"), "factor"]
     assert total == pytest.approx(185 / 350, rel=1e-6)           # = the actual opening gap
     assert not ev.loc[("Y", "bonus"), "applied"]                  # price never moved
+
+
+# --------------------------------------------------------------------------- Gate A review: rights premiums, overrides
+
+def test_rights_premium_formats():
+    from nsebt.corpactions import parse_subject
+    cases = {"Rights 87:38 @ Premium Of Rs 2.50 Per Share": "87:38 @ 12.5", "Rights 7:10 @ Prm Rs 102/-": "7:10 @ 112",
+             "Rights 1:9 @ Premium 91": "1:9 @ 101", "Rights 9:77 Partly Paid @ Premium Rs 100/-": "9:77 @ 110",
+             "Rights 1:28 @ Prem Rs 67/- Per Share": "1:28 @ 77", "Rights 1:2 @ Premium Re 1.50/-": "1:2 @ 11.5",
+             "Rights 1:15 @ Premium Rs 1247/-": "1:15 @ 1257"}
+    for subj, want in cases.items():
+        ev = [e for e in parse_subject(subj, 10.0) if e["kind"] == "rights"][0]
+        assert ev["detail"] == want and ev["_issue"] == float(want.split("@ ")[1]), subj
+
+
+def test_ca_overrides_set_factor_and_must_match_one_event(tmp_path):
+    import pandas as pd
+    import pytest
+    from nsebt.corpactions import apply_overrides
+    ev = pd.DataFrame({"SecurityID": ["X", "X"], "ex_date": pd.to_datetime(["2025-12-05", "2025-12-05"]),
+                       "kind": ["arrangement", "dividend"], "factor": [1.0, 0.99], "applied": [True, True]})
+    p = tmp_path / "o.csv"
+    pd.DataFrame({"SecurityID": ["X"], "Symbol": ["X"], "ex_date": ["2025-12-05"], "kind": ["arrangement"],
+                  "factor": ["0.98"], "source": ["filing"]}).to_csv(p, index=False)
+    out, done = apply_overrides(ev, p)
+    assert out.loc[0, "factor"] == 0.98 and out.loc[1, "factor"] == 0.99 and len(done) == 1
+    pd.DataFrame({"SecurityID": ["X"], "Symbol": ["X"], "ex_date": ["2025-12-06"], "kind": ["arrangement"],
+                  "factor": ["0.98"], "source": ["filing"]}).to_csv(p, index=False)
+    with pytest.raises(ValueError, match="matches 0"):
+        apply_overrides(ev, p)

@@ -32,7 +32,10 @@ NUM = r"(\d+(?:\.\d+)?)"
 RE_SPLIT = re.compile(r"(?:split|splt|sub-?division).*?(?:from|frm)\s*r[se]\.?\s*" + NUM + r".*?to\s*r[se]\.?\s*" + NUM, re.I)
 RE_CONSOL = re.compile(r"consolidation.*?from\s*r[se]\.?\s*" + NUM + r".*?to\s*r[se]\.?\s*" + NUM, re.I)
 RE_BONUS = re.compile(r"(?<![a-z])bonus\s*[-:]?\s*" + NUM + r"\s*:\s*" + NUM, re.I)
-RE_RIGHTS = re.compile(r"rights?(?:\s*issue)?\s*" + NUM + r"\s*:\s*" + NUM + r"(?:\s*@\s*prem(?:ium)?\s*r[se]\.?\s*" + NUM + r")?", re.I)
+# "Rights 87:38 @ Premium Of Rs 2.50", "7:10 @ Prm Rs 102/-", "1:9 @ Premium 91",
+# "9:77 Partly Paid @ Premium Rs 100/-", "1:28 @ Prem Rs 67/- Per Share", "1:2 @ Premium Re 1.50/-"
+RE_RIGHTS = re.compile(r"rights?(?:\s*issue)?\s*" + NUM + r"\s*:\s*" + NUM
+                       + r"(?:[^@]{0,30}@\s*(?:prem(?:ium)?|prm)\.?\s*(?:of\s*)?(?:r[se]\.?\s*)?" + NUM + r")?", re.I)
 RE_DIV = re.compile(r"dividend\s*-?\s*r[se]\.?\s*" + NUM, re.I)
 RE_ARRANGE = re.compile(r"demerg|arrangement|capital reduction", re.I)
 ARRANGE_MIN_GAP = 0.03
@@ -183,6 +186,35 @@ def price_factors(ev: pd.DataFrame, px: pd.DataFrame) -> pd.DataFrame:
     keep = ["SecurityID", "matched_by", "ISIN", "Symbol", "ex_date", "effective_date", "kind", "factor", "exact",
             "detail", "subject", "prior_close", "ex_open", "ex_close", "price_move", "price_confirms", "applied"]
     return ev[keep].sort_values(["SecurityID", "effective_date"]).reset_index(drop=True)
+
+
+OVERRIDE_COLUMNS = ["SecurityID", "Symbol", "ex_date", "kind", "factor", "source"]
+
+
+def apply_overrides(ev: pd.DataFrame, path: Path | None) -> tuple[pd.DataFrame, list[dict]]:
+    """Set the factor of specific events from `ca_overrides.csv` (manual, every row sourced):
+    events the automatic rules get wrong, e.g. a demerger under the 3% gap threshold or a bonus
+    of redeemable preference shares. Each row must match exactly one event (SecurityID, ex_date,
+    kind); the event is marked applied. Returns (events, applied rows)."""
+    if path is None or not Path(path).exists() or not len(ev):
+        return ev, []
+    ov = pd.read_csv(path, dtype=str, keep_default_na=False)
+    missing = set(OVERRIDE_COLUMNS) - set(ov.columns)
+    if missing:
+        raise ValueError(f"{Path(path).name}: missing column(s) {sorted(missing)}")
+    ev = ev.copy()
+    done = []
+    for r in ov.itertuples(index=False):
+        f = float(r.factor)
+        if not (0 < f < 100) or not r.source.strip():
+            raise ValueError(f"{Path(path).name}: {r.Symbol} {r.ex_date}: factor must be > 0 and a source given")
+        k = (ev["SecurityID"] == r.SecurityID) & (ev["ex_date"] == pd.Timestamp(r.ex_date)) & (ev["kind"] == r.kind)
+        if k.sum() != 1:
+            raise ValueError(f"{Path(path).name}: {r.Symbol} {r.ex_date} {r.kind} matches {int(k.sum())} events")
+        ev.loc[k, "factor"], ev.loc[k, "applied"] = f, True
+        done.append({"SecurityID": r.SecurityID, "Symbol": r.Symbol, "ex_date": r.ex_date, "kind": r.kind,
+                     "factor": f})
+    return ev, done
 
 
 def infer_from_isin_changes(px: pd.DataFrame, ev: pd.DataFrame, tol: float = 0.04) -> pd.DataFrame:

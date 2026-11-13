@@ -1,0 +1,7 @@
+SecurityID,Symbol,ex_date,kind,factor,source
+INE030A01027,HINDUNILVR,2025-12-05,arrangement,0.983673,"Demerger of Kwality Wall's (India). Factor = ex-date open 2422.00 / prior close 2462.20, the method used for every demerger; the 1.6% gap is under the 3% automatic threshold"
+INE461C01038,GREENPLY,2019-07-12,arrangement,0.991392,"Demerger (Greenpanel). Factor = ex-date open 167.00 / prior close 168.45; under the 3% automatic threshold"
+INE483S01012,CCAVENUE,2020-12-10,arrangement,0.990433,"Demerger. Factor = ex-date open 88.00 / prior close 88.85; under the 3% automatic threshold"
+INE530B01024,IIFL,2017-10-17,arrangement,0.981393,"Scheme of arrangement (5paisa Capital demerger). Factor = ex-date open 604.00 / prior close 615.45; under the 3% automatic threshold"
+INE494B01023,TVSMOTOR,2025-08-25,arrangement,0.987859,"Bonus NCRPS: 4 x Rs 10 per share (record date 25-Aug-2025; allotment 01-Sep-2025, Rs 1,900.35 crore). Factor = 1 - 40 / prior close 3294.60"
+INE105A01035,TVSHLTD,2026-09-08,arrangement,0.966541,"Bonus NCRPS 46:1 (subject) at Rs 10 face value assumed (one aggregator source; record date 08-Sep-2026). Factor = 1 - 460 / prior close 13748.00. Approximate"

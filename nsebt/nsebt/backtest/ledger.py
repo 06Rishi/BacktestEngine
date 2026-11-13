@@ -47,7 +47,8 @@ class LedgerConfig:
     demerger_realise_lag_days: int = 60      # calendar days
     merger: str = "convert_then_sell"
     delisting: str = "haircut(50)"           # haircut(N) | last_close | zero: value received on delisting
-    unknown_grace_days: int = 60             # trading days an unexplained stop is held before it counts as delisted
+    grace_days: int = 60                     # trading days a security that stopped for good (delisted, suspended
+                                             # without resuming, unknown) is held before it exits under the policy
 
     def __post_init__(self):
         for key, allowed in OPTIONS.items():
@@ -59,7 +60,7 @@ class LedgerConfig:
         except ValueError as e:
             raise ValueError(f"corporate_actions.delisting: {e}") from None
         for key in ("dividend_pay_lag_days", "rights_realise_lag_days", "demerger_realise_lag_days",
-                    "unknown_grace_days"):
+                    "grace_days"):
             v = getattr(self, key)
             if not isinstance(v, (int, np.integer)) or isinstance(v, bool) or v < 0:
                 raise ValueError(f"corporate_actions.{key}: must be a whole number ≥ 0, got {v!r}")
@@ -151,7 +152,7 @@ def split_shares(shares: int, factor: float) -> tuple[int, float]:
 
 def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
              mergers: pd.DataFrame | None = None, lifecycle: pd.DataFrame | None = None,
-             unknown_grace_days: int = 60):
+             grace_days: int = 60):
     """Map corporate-action rows (and merger rows from mergers.load) onto the market calendar.
 
     Returns (events, unscheduled):
@@ -178,18 +179,20 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
             events.setdefault(t, []).append(Event(t, int(j), "merger", float("nan"), 0.0, eff, detail, False,
                                                   int(parts[0][0]), parts[0][1], tuple(parts[1:]), cash))
     if lifecycle is not None and len(lifecycle):
-        # delisted: exit on the first day after the last trade; unknown: after the grace period
-        lc = lifecycle[lifecycle["cls"].isin(["delisted", "unknown"]) & lifecycle["effective_date"].notna()]
+        # delisted, suspended (never resumed) and unknown: held for the grace period after the last
+        # trade, then exit at the stated value or under the delisting policy. Same timing for every
+        # class, so knowing the outcome in hindsight does not free cash earlier.
+        lc = lifecycle[lifecycle["cls"].isin(["delisted", "suspended", "unknown"]) & lifecycle["effective_date"].notna()]
         for r, j in zip(lc.itertuples(index=False), ids.get_indexer(lc["SecurityID"])):
             eff = pd.Timestamp(r.effective_date)
             if j < 0 or eff <= first or eff > last:
                 continue
-            t = int(dates.searchsorted(eff, side="left")) + (unknown_grace_days if r.cls == "unknown" else 0)
+            t = int(dates.searchsorted(eff, side="left")) + grace_days
             v = getattr(r, "value", float("nan"))
             v = float(v) if v is not None and pd.notna(v) else float("nan")
             if t < len(dates):
                 events.setdefault(t, []).append(Event(t, int(j), "delisting", float("nan"), 0.0, eff, r.cls,
-                                                      r.cls == "unknown", value=v))
+                                                      r.cls != "delisted" or not np.isfinite(v), value=v))
     if ca is None or not len(ca):
         for t in events:
             events[t].sort(key=lambda e: (e.j, e.order))

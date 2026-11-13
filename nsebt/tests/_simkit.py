@@ -4,6 +4,7 @@ import pandas as pd
 
 from nsebt.backtest.account import Account
 from nsebt.backtest.costs import CostModel
+from nsebt.backtest.eligibility import EligibilityConfig
 from nsebt.backtest.sim import Market, Signals, SimConfig
 
 FREE = CostModel(stt_pct=0, transaction_pct=0, sebi_per_crore=0, gst_pct=0, stamp_pct_buy=0,
@@ -42,9 +43,11 @@ def sig(m, entries=(), exits=(), score=None, **kw):
     return Signals(entry=e, exit=x, score=score, **kw)
 
 
-def cfg(capital=30_000, n=3, cap=33.0, part=100.0, costs=FREE, **kw):
+def cfg(capital=30_000, n=3, cap=33.0, part=100.0, costs=FREE, on_universe_exit="hold", adv_days=1, **kw):
+    """Hand-built markets: A4 filters off (no price or ADV floor), ADV window of `market()` (1 day)."""
+    el = EligibilityConfig(min_price=0.0, min_adv=0.0, adv_days=adv_days, on_universe_exit=on_universe_exit)
     return SimConfig(account=Account(capital=capital, max_positions=n, max_position_pct=cap,
-                                     max_participation_pct=part), costs=costs, **kw)
+                                     max_participation_pct=part), costs=costs, eligibility=el, **kw)
 
 
 

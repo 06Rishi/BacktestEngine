@@ -1,14 +1,14 @@
 # Securities that stopped trading: conversions and outcomes
 
 Date 2026-11-13. Covers all 82 Nifty 500 members (2016–2026) whose NSE trading ended before the data end.
-Sources: NSE corporate announcements and their attached filings (fetched to `data/nse/raw/announcements/`), NSE's delisted and suspension lists, and press reports where noted.
+Sources: NSE corporate announcements (summaries cached in `data/nse/raw/announcements/`), the text of their attached filings (cached in `data/nse/raw/filings_text/`, 283 files for 47 securities), NSE's delisted and suspension lists, and press or company record-date reports where noted. The cached filing text contains the ratio for most conversions; the bank mergers, SHRIRAMCIT, ISEC, TATAMTRDVR, RUCHISOYA, GDL and JSLHISAR rest on the cited record-date notices and press reports.
 
 | Outcome | Members | Engine treatment |
 |---|---|---|
 | Converted (merger, scheme or capital-reduction relisting) | 49 | `mergers.csv`: shares of the acquirer(s) at the scheme ratio, plus any cash |
-| Delisted, value stated in a source | 17 | Exit at the stated value (₹0 where the equity was extinguished) |
-| Delisted, payout not stated | 5 + 4 on NSE's delisted list | Delisting policy (default `haircut(50)`) |
-| Suspended, no final outcome by the data end | 7 | Held at the last close (amendment 2.4) |
+| Delisted, value stated in a source | 17 | Held at the last close for 60 trading days, then exit at the stated value (₹0 where the equity was extinguished) |
+| Delisted, payout not stated | 5 + 4 on NSE's delisted list | Held for 60 trading days, then the delisting policy (default `haircut(50)`) |
+| Suspended, no final outcome by the data end | 7 | Held for 60 trading days, then the delisting policy (user decision at the Gate A review; amendment 2.4 said hold) |
 | Unknown | 0 | — |
 
 ## Conversions
@@ -20,7 +20,7 @@ Value check: the parent's last close against what the holder received at the acq
 | SBBJ | 2017-03-15 | 28/10 SBIN | +1.3% | 1 | SBI board 18-Aug-2016 swap ratio (28 SBI per 10 SBBJ); NSE suspension notice 06-Mar-2017 |
 | MYSOREBANK | 2017-03-15 | 22/10 SBIN | +1.4% | 1 | SBI board 18-Aug-2016 swap ratio (22 SBI per 10 SBM); NSE suspension notice 06-Mar-2017 |
 | SBT | 2017-03-15 | 22/10 SBIN | +0.9% | 1 | SBI board 18-Aug-2016 swap ratio (22 SBI per 10 SBT); NSE suspension notice 06-Mar-2017 |
-| CAIRN | 2017-04-25 | 1 VEDL + ₹40 | -3.8% | 1 | NSE filing CAIRN record date 27-Apr-2017: 1 Vedanta + 4 x Rs 10 7.5% RPS (cash exit at par = Rs 40) per share |
+| CAIRN | 2017-04-25 | 1 VEDL + ₹57.70 | +2.4% | 1 | NSE filing CAIRN record date 27-Apr-2017: 1 Vedanta + 4 x Rs 10 7.5% RPS (cash exit at par = Rs 40) + Vedanta interim dividend Rs 17.70 per Cairn share (filing 12-Apr-2017) |
 | DISHMAN | 2017-05-29 | 1 DCAL | +16.9% | 115 | NSE filing DISHMAN 19-May-2017: 1 DCAL per 1 DPCL; acquirer listed 21-Sep-2017 |
 | ABIRLANUVO | 2017-07-04 | 15/10 GRASIM | +2.3% | 1 | NSE filing ABIRLANUVO 20-Jun-2017: 15 Grasim per 10 ABNL |
 | TUBEINVEST | 2017-08-23 | 1 TIFIN + 1 TIINDIA | +7.9% | 71 | Scheme of arrangement 2017, record date 28-Aug-2017: holding continues as TI Financial Holdings (new ISIN INE149A01033); same scheme: 1 Tube Investments of India (INE974X01010, new) per share |

@@ -1,20 +1,32 @@
-"""Ledger-vs-adjusted reconciliation (amendment 2.6), run for every security in one pass.
+"""Engine and data validation (amendment 2.6), run for every security in one pass.
 
-(a) Reinvest-equivalent check. A costless buy-and-hold of every security goes through the engine
-    in `reconcile` mode: each value event (dividend, rights, demerger) is reinvested as shares ÷
-    factor, share events divide shares by the factor, and fractional shares are kept. The value
-    held, shares × raw close, must then move exactly like the total-return adjusted close
-    (kinds = PRICE_KINDS + dividend). Each day's return is compared to 1e-6. This catches factor-
-    direction errors, missed or double-counted events, wrong effective dates and ISIN breaks.
+What each check proves, and what it does not:
 
-(b) Receivable-mode check. The default engine (dividends, rights and demergers as receivables)
-    must preserve value on every ex-date: shares_before × previous close = shares_after ×
-    previous close × factor + amount credited, to 1e-6.
+(a) Engine mechanics. A costless buy-and-hold of every security runs in `reconcile` mode (each
+    value event reinvested as shares ÷ factor, share events applied, fractions kept). The value
+    held must move exactly like the total-return adjusted close, day by day, to 1e-6. The engine
+    and the adjusted series read the SAME corporate-action table, so this proves the engine
+    applies the table correctly (scheduling, factor direction, same-day compounding, entitlement
+    timing). It cannot detect an error in the table itself or in the store's ISIN linking.
+
+(b) Receivable mode. On each ex-date: shares_before × previous close = shares_after × previous
+    close × factor + amount credited. Because the amount is derived from the factor, this can
+    only fail when the table's prior close disagrees with the market's previous close, or when
+    the receivable code path drops or double-books an amount. It is a code-path check.
+
+(c) Table against prices (independent of the table's own logic). For every member event-day with
+    a price-moving action, the combined factor is compared with the actual ex-date open and close
+    moves. Days where both differ by more than 10% are listed for review. This is what catches
+    a wrong or missing factor (it found the IDEA rights issue and the sub-3% demergers).
+
+(d) Full ledger run. Every member is held from listing through its splits, dividends, rights,
+    demergers, conversions (mergers.csv) and lifecycle exits (delisted, suspended), with real
+    acquirer prices. Equity must equal capital plus realised and unrealised P&L to 1e-6, cash must
+    never go negative, and every warning is listed.
 
 Why (a) and not the receivable engine against the adjusted series directly: the adjusted series
 reinvests each dividend at the ex-date price, while the engine holds it as cash. The two differ by
-about D/P × the next day's return (~1e-4 per ex-date), so a 1e-6 daily tolerance can't hold for the
-receivable engine. (a) and (b) together check the same things without that drift.
+about D/P × the next day's return (~1e-4 per ex-date). Approved by the user at Gate A.
 """
 from __future__ import annotations
 
@@ -26,6 +38,7 @@ import pandas as pd
 
 from .account import Account
 from .costs import CostModel
+from .eligibility import EligibilityConfig
 from .sim import Market, SimConfig, Signals, Simulator
 
 FREE = CostModel(stt_pct=0, transaction_pct=0, sebi_per_crore=0, gst_pct=0, stamp_pct_buy=0,
@@ -66,7 +79,8 @@ class Reconciliation:
 
 def _hold_all(market: Market, reconcile: bool) -> Simulator:
     D, N = market.close.shape
-    cfg = SimConfig(account=Account(capital=1.0, max_positions=1), costs=FREE, reconcile=reconcile)
+    cfg = SimConfig(account=Account(capital=1.0, max_positions=1), costs=FREE, reconcile=reconcile,
+                    eligibility=EligibilityConfig(min_price=0.0, min_adv=0.0, adv_days=market.adv_days))
     sim = Simulator(market, Signals(entry=np.zeros((D, N), bool)), cfg, track=True)
     first = np.argmax(np.isfinite(market.close), axis=0)
     for j in range(N):
@@ -159,3 +173,47 @@ def from_store(store, universe="nifty500", extra=()) -> tuple[Market, np.ndarray
     m = Market.from_panel(panel, actions=ca)
     adj = panel.close.reindex(index=m.dates, columns=m.ids).to_numpy(float)
     return m, adj, time.perf_counter() - t0
+
+
+PRICE_KINDS_CHECKED = ("split", "bonus", "consolidation", "inferred_split", "rights", "arrangement",
+                       "special_dividend")
+TABLE_TOL = 0.10
+
+
+def check_table(ca: pd.DataFrame, member_ids, first_day=None, tol: float = TABLE_TOL) -> tuple[pd.DataFrame, int]:
+    """(c): event-days where the combined factor disagrees with both the ex-date open gap and the
+    close move by more than `tol`. Returns (flagged rows, event-days checked)."""
+    c = ca[ca["applied"].astype(bool) & ca["SecurityID"].isin(set(member_ids)) & ca["effective_date"].notna()
+           & ca["kind"].isin(PRICE_KINDS_CHECKED)]
+    if first_day is not None:
+        c = c[c["effective_date"] > pd.Timestamp(first_day)]
+    g = c.groupby(["SecurityID", "effective_date"]).agg(
+        Symbol=("Symbol", "first"), kinds=("kind", lambda x: "+".join(x)), factor=("factor", "prod"),
+        prior_close=("prior_close", "first"), ex_open=("ex_open", "first"), ex_close=("ex_close", "first")
+    ).reset_index()
+    g["open_gap"], g["close_move"] = g["ex_open"] / g["prior_close"], g["ex_close"] / g["prior_close"]
+    lim = np.log(1 + tol)
+    bad = g[(np.log(g["open_gap"] / g["factor"]).abs() > lim) & (np.log(g["close_move"] / g["factor"]).abs() > lim)]
+    return bad.reset_index(drop=True), len(g)
+
+
+def full_ledger_run(market: Market, member_ids, shares: float = 1000.0):
+    """(d): hold every member from its first trade through every corporate action, conversion and
+    lifecycle exit in the default (receivable) engine. Returns (result, accounting error, min cash)."""
+    from .eligibility import EligibilityConfig
+    D, N = market.close.shape
+    cfg = SimConfig(account=Account(capital=1.0, max_positions=1), costs=FREE,
+                    eligibility=EligibilityConfig(min_price=0.0, min_adv=0.0, adv_days=market.adv_days))
+    sim = Simulator(market, Signals(entry=np.zeros((D, N), bool)), cfg)
+    first = np.argmax(np.isfinite(market.close), axis=0)
+    mem = set(member_ids)
+    injected = 0.0                    # injected holdings are not paid for: their cost is added back
+    for j in range(N):
+        if market.ids[j] in mem and np.isfinite(market.close[first[j], j]):
+            sim.inject(int(first[j]), j, shares)
+            injected += shares * market.close[first[j], j]
+    r = sim.run()
+    unreal = sum(p.shares * p.last_close + p.income - p.cost_basis - p.buy_charges.total for p in sim._held())
+    realised = float(r.trades["net_pnl"].sum()) if len(r.trades) else 0.0
+    err = float(r.daily["equity"].iloc[-1] - 1.0 - injected - realised - unreal)
+    return r, err, float(r.daily["cash"].min())

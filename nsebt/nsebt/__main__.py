@@ -242,53 +242,70 @@ def cmd_lifecycle(a):
 
 
 def cmd_reconcile(a):
-    """Ledger-vs-adjusted reconciliation for every Nifty 500 security (amendment 2.6), plus speed."""
+    """Engine and data validation for every Nifty 500 security (amendment 2.6), plus speed."""
     import time
     import numpy as np
-    from .backtest import reconcile as rc
+    import pandas as pd
+    from .backtest import market as mk, reconcile as rc
     from .backtest.account import Account
     from .backtest.sim import SimConfig, Signals, simulate
+    from .backtest.run import store_version
     cfg = _cfg(a)
-    out = cfg.path("reports")
-    m, adj, t_load = rc.from_store(cfg.path("store"))
+    out, store = cfg.path("reports"), cfg.path("store")
+    m, adj, t_load = rc.from_store(store)
     r = rc.reconcile(m, adj)
-    D, N = m.close.shape
+    mem = sorted(set(pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna()))
+    bad, n_days = rc.check_table(pd.read_parquet(store / "corporate_actions.parquet"), mem, m.dates[0])
+    t0 = time.perf_counter()
+    fm, panel = mk.from_store(cfg)
+    t_fload = time.perf_counter() - t0
+    full, err, min_cash = rc.full_ledger_run(fm, mem)
+    D, N = fm.close.shape
     rng = np.random.default_rng(0)
     t0 = time.perf_counter()
-    simulate(m, Signals(entry=rng.random((D, N)) < 0.05, exit=rng.random((D, N)) < 0.02),
-             SimConfig(account=Account(capital=36_000, max_positions=3, max_position_pct=33)))
+    simulate(fm, Signals(entry=rng.random((D, N)) < 0.05, exit=rng.random((D, N)) < 0.02),
+             SimConfig.from_config(cfg.raw))
     t_sim = time.perf_counter() - t0
     r.summary.to_csv(out / "phase45_reconciliation_securities.csv", index=False)
     r.failures.to_csv(out / "phase45_reconciliation_failures.csv", index=False)
     r.preservation.to_csv(out / "phase45_reconciliation_events.csv", index=False)
+    bad.to_csv(out / "phase45_reconciliation_table_vs_prices.csv", index=False)
     kinds = r.preservation["kind"].value_counts().to_dict() if len(r.preservation) else {}
+    ok_d = abs(err) < 1e-6 * max(1.0, abs(full.daily["equity"].iloc[-1])) and min_cash > -1e-6
     lines = [
-        "# Reconciliation: position ledger vs adjusted prices (amendment 2.6)", "",
-        f"Store version: {__import__('nsebt.backtest.run', fromlist=['store_version']).store_version(cfg.path('store'))}. "
-        f"Universe: every Nifty 500 member 2016-2026 ({N} securities, {D} days).", "",
-        "| Check | Result |", "|---|---|",
-        f"| (a) reinvest-equivalent: securities checked | {r.n} |",
-        f"| (a) securities with any day outside 1e-6 | {r.n_failed} ({r.fail_share:.2%}; stop rule S4 above 0.5%) |",
-        f"| (a) largest daily error | {r.summary['max_abs_err'].max():.1e} |",
-        f"| (a) security-days compared | {int(r.summary['days'].sum()):,} |",
-        f"| (b) receivable mode: value events checked | {len(r.preservation)} ({', '.join(f'{k} {v}' for k, v in kinds.items())}) |",
-        f"| (b) events outside 1e-6 | {r.b_failed} |",
-        f"| Value events with no factor (excluded) | {len(r.excluded)} |",
-        f"| Result | {'PASS' if r.passed else 'FAIL'} |", "",
+        "# Validation: position ledger and corporate-action data (amendment 2.6)", "",
+        f"Store version: {store_version(store)}. Universe: every Nifty 500 member 2016-2026 "
+        f"({len(mem)} in membership; {r.n} with prices in the panel), {len(m.dates)} days.", "",
+        "| Check | What it proves | Result |", "|---|---|---|",
+        f"| (a) Reinvest-equivalent engine vs total-return adjusted close, every day, 1e-6 | The engine applies the "
+        f"corporate-action table correctly. Both sides read the same table, so table errors are not visible here | "
+        f"{r.n - r.n_failed} of {r.n} securities pass; largest error {r.summary['max_abs_err'].max():.1e}; "
+        f"{int(r.summary['days'].sum()):,} security-days |",
+        f"| (b) Receivable mode: value preserved on each ex-date, 1e-6 | Code path for receivables; table prior "
+        f"close agrees with market prices | {len(r.preservation) - r.b_failed} of {len(r.preservation)} events "
+        f"({', '.join(f'{k} {v}' for k, v in kinds.items())}) |",
+        f"| (c) Table vs prices: combined factor vs ex-date open and close moves | Independent check of the table "
+        f"itself | {len(bad)} of {n_days} member event-days differ by more than 10% on both; listed below |",
+        f"| (d) Full ledger run: every member held through all actions, conversions and lifecycle exits | "
+        f"Accounting identity and no negative cash with mergers.csv and lifecycle applied | "
+        f"{'PASS' if ok_d else 'FAIL'}: error {err:.1e}, {len(full.ledger)} ledger events "
+        f"({(full.ledger['kind'] == 'merger').sum()} conversions, {(full.ledger['kind'] == 'delisting').sum()} "
+        f"lifecycle exits), {len(full.config['warnings'])} warnings |", "",
+        "Flagged by (c); review notes are in reports/gateA_report.md:", "",
+        "| Security | Date | Events | Factor | Open gap | Close move |", "|---|---|---|---|---|---|"]
+    for x in bad.itertuples():
+        lines.append(f"| {x.Symbol} | {x.effective_date.date()} | {x.kinds} | {x.factor:.4f} | {x.open_gap:.4f} | "
+                     f"{x.close_move:.4f} |")
+    lines += ["", "Warnings from (d): " + ("; ".join(full.config["warnings"]) or "none"), "",
         "| Timing | Seconds |", "|---|---|",
-        f"| Load Nifty 500 panel (raw + total-return adjusted) | {t_load:.1f} |",
-        f"| Reinvest-equivalent run, all securities held | {r.seconds['reinvest_run']:.1f} |",
-        f"| Receivable-mode run, all securities held | {r.seconds['receivable_run']:.1f} |",
+        f"| Load the Nifty 500 panel with acquirers, corporate actions, mergers and lifecycle (`market.from_store`) | {t_fload:.1f} |",
         f"| One backtest, 3 positions, random signals, full costs | {t_sim:.1f} |",
-        f"| Single backtest including load (target ≤ 30) | {t_load + t_sim:.1f} |", "",
-        "Method and assumptions: see `nsebt/nsebt/backtest/reconcile.py`. (a) reinvests every value event as "
-        "shares ÷ factor, so it can match the total-return series exactly; the default engine holds dividends "
-        "as receivables, which drift from the reinvested series by about D/P × the next day's return, so it is "
-        "checked by (b), value preservation on each ex-date.",
-    ]
+        f"| Single backtest including the load (target ≤ 30) | {t_fload + t_sim:.1f} |",
+        f"| Reconciliation runs (a) and (b), every security held | {r.seconds['reinvest_run']:.1f} + {r.seconds['receivable_run']:.1f} |",
+        "", "Method: `nsebt/nsebt/backtest/reconcile.py` (module docstring states what each check proves)."]
     (out / "phase45_reconciliation.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
-    if not r.passed:
+    if not (r.passed and ok_d):
         sys.exit(1)
 
 

@@ -7,6 +7,7 @@ paths:
   store: data/store                       # canonical parquet store built from the raw files
   mergers: mergers.csv                    # manual share-conversion table: mergers, schemes, relistings
   lifecycle_overrides: lifecycle_overrides.csv   # sourced outcomes for securities that stopped trading
+  ca_overrides: ca_overrides.csv          # sourced factors for corporate actions the automatic rules get wrong
   reports: reports
   logs: logs
 
@@ -46,6 +47,7 @@ backup:
     - bbg_overrides.csv
     - mergers.csv
     - lifecycle_overrides.csv
+    - ca_overrides.csv
     - config.yaml
     - reports/runs                   # daily update reports
   destinations: []                   # e.g. /run/media/<you>/drive or a Google Drive folder
@@ -74,7 +76,7 @@ corporate_actions:
   demerger_realise_lag_days: 60  # calendar days
   merger: convert_then_sell      # convert_then_sell | convert_and_hold
   delisting: haircut(50)         # haircut(N) | last_close | zero: share of the last close received
-  unknown_grace_days: 60         # trading days an unexplained stop is held, then treated as delisted
+  grace_days: 60                 # trading days a security that stopped for good is held, then exits (delisted, suspended, unknown)
 
 eligibility:
   # Entry eligibility (amendment A4) and index removal (2.5). Data up to the decision close only.

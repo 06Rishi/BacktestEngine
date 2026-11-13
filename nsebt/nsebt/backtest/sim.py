@@ -20,10 +20,10 @@ import pandas as pd
 
 from .account import Account
 from .costs import Charges, CostModel, DPTracker
-from .eligibility import UNIVERSE_EXIT, rolling_adv
+from .eligibility import EligibilityConfig, rolling_adv
 from .ledger import Event, LedgerConfig, delisting_value, parse_rights, schedule, split_shares
 
-REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired")
+REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired", "held")
 
 
 # --------------------------------------------------------------------------- inputs
@@ -42,7 +42,9 @@ class Market:
     actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
     mergers: pd.DataFrame | None = None   # mergers.load(): parent, effective_date, acquirer, ratio
     lifecycle: pd.DataFrame | None = None # lifecycle.parquet: delisted / unknown securities exit by policy
-    members: np.ndarray | None = None     # bool (D, N) point-in-time membership (for on_universe_exit)
+    members: np.ndarray | None = None     # bool (D, N) point-in-time membership (eligibility, universe exit)
+    adv_days: int = 20                    # window of `adv`; must equal the eligibility config's adv_days
+    sources: dict = field(default_factory=dict)   # input files and their hashes (Market.from_store)
 
     @classmethod
     def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20,
@@ -57,7 +59,7 @@ class Market:
             adv = rolling_adv(turnover.reindex(index=idx, columns=cols), adv_days)
         prev = close.ffill().shift(1)
         return cls(idx, cols, al(open_), al(high), al(low), close.to_numpy(float),
-                   adv.to_numpy(float), al(prev), actions, mergers, lifecycle)
+                   adv.to_numpy(float), al(prev), actions, mergers, lifecycle, adv_days=adv_days)
 
     @classmethod
     def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None,
@@ -68,10 +70,12 @@ class Market:
             m.members = panel.members.reindex(index=m.dates, columns=m.ids).fillna(False).to_numpy(bool)
         return m
 
-    def locked(self, t: int, j: int) -> str | None:
+    def locked(self, t: int, j: int, prev: float | None = None) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
-        the previous close: likely locked at a circuit limit."""
-        o, h, l, c, p = self.open[t, j], self.high[t, j], self.low[t, j], self.close[t, j], self.prev_close[t, j]
+        the previous close: likely locked at a circuit limit. `prev` overrides the previous close
+        (the simulator passes it adjusted for that day's corporate actions)."""
+        o, h, l, c = self.open[t, j], self.high[t, j], self.low[t, j], self.close[t, j]
+        p = self.prev_close[t, j] if prev is None else prev
         if not (o == h == l == c) or not np.isfinite(p) or o == p:
             return None
         return "up" if o > p else "down"
@@ -100,6 +104,9 @@ class Signals:
     max_hold_days: int | None = None
     sizing: Sizing = field(default_factory=Sizing)
     max_positions: int | None = None        # strategy's own limit (the account's limit wins)
+    warmup: np.ndarray | None = None        # bool (D, N): the strategy's warm-up is satisfied (A1/A4)
+    dates: pd.DatetimeIndex | None = None   # labels: when given they must equal the market's
+    ids: pd.Index | None = None
 
 
 @dataclass
@@ -109,14 +116,19 @@ class SimConfig:
     seed: int = 0
     buy_order_ttl_days: int = 1                 # unfilled buys are cancelled after this many days
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
-    on_universe_exit: str = "hold"              # hold | sell (amendment 2.5): sell at the next open on removal
+    eligibility: EligibilityConfig = field(default_factory=EligibilityConfig)   # A4 entry filter + universe exit
     reconcile: bool = False   # validation only (amendment 2.6): every value event reinvested as shares ÷ factor,
                               # fractional shares kept; reproduces the total-return adjusted series exactly
-
-    def __post_init__(self):
-        if self.on_universe_exit not in UNIVERSE_EXIT:
-            raise ValueError(f"on_universe_exit: '{self.on_universe_exit}' is not one of {list(UNIVERSE_EXIT)}")
     # unfilled sells (not traded, locked at the lower circuit) retry every day until filled
+
+    @classmethod
+    def from_config(cls, raw: dict, seed: int = 0) -> "SimConfig":
+        """Every config.yaml block the simulation depends on: account, costs, corporate_actions,
+        eligibility. The account block may be absent (defaults apply)."""
+        from .account import from_config as account_from_config
+        acc = account_from_config(raw) or Account()
+        return cls(account=acc, costs=CostModel.from_config(raw), seed=seed,
+                   ledger=LedgerConfig.from_config(raw), eligibility=EligibilityConfig.from_config(raw))
 
 
 # --------------------------------------------------------------------------- state
@@ -180,10 +192,28 @@ class Simulator:
     def __init__(self, market: Market, signals: Signals, cfg: SimConfig = SimConfig(), track: bool = False):
         self.m, self.s, self.cfg = market, signals, cfg
         D, N = market.close.shape
-        for name in ("entry", "exit", "score", "stop", "target", "trail"):
+        for name in ("entry", "exit", "score", "stop", "target", "trail", "warmup"):
             a = getattr(signals, name)
             if a is not None and a.shape != (D, N):
                 raise ValueError(f"signals.{name} has shape {a.shape}, market is {(D, N)}")
+        if signals.dates is not None and not pd.DatetimeIndex(signals.dates).equals(market.dates):
+            raise ValueError("signals.dates differ from the market's dates")
+        if signals.ids is not None and not pd.Index(signals.ids).equals(market.ids):
+            raise ValueError("signals.ids differ from the market's securities (order matters)")
+        el = cfg.eligibility
+        if el.adv_days != market.adv_days:
+            raise ValueError(f"market ADV window is {market.adv_days} days; eligibility.adv_days is {el.adv_days}")
+        if el.on_universe_exit == "sell" and market.members is None:
+            raise ValueError("on_universe_exit: sell needs membership data (Market.members)")
+        # A4: point-in-time member, traded today, warm-up, raw close >= min_price, ADV >= min_adv
+        with np.errstate(invalid="ignore"):
+            ok = np.isfinite(market.close) & (market.close >= el.min_price)
+            ok &= (np.nan_to_num(market.adv, nan=0.0) >= el.min_adv)
+        if market.members is not None:
+            ok &= market.members
+        if signals.warmup is not None:
+            ok &= signals.warmup.astype(bool)
+        self.eligible = ok
         if signals.sizing.mode == "risk_pct" and signals.stop is None:
             raise ValueError("risk_pct sizing needs a stop")
         acc = cfg.account
@@ -200,7 +230,13 @@ class Simulator:
         self.trades, self.rejected, self.unfilled, self.daily = [], [], [], []
         self.costs_today = 0.0
         self.events, unscheduled = schedule(market.dates, market.ids, market.actions, market.mergers,
-                                            market.lifecycle, cfg.ledger.unknown_grace_days)
+                                            market.lifecycle, cfg.ledger.grace_days)
+        # previous close adjusted for each day's corporate actions (locked-circuit test, merger pricing)
+        self.prev = market.prev_close.copy()
+        for t, evs in self.events.items():
+            for e in evs:
+                if np.isfinite(e.factor) and e.factor > 0:
+                    self.prev[t, e.j] *= e.factor
         self.side_sells: list[Position] = []     # merged shares to sell while the acquirer is also held
         self.unscheduled: dict[int, list] = {}
         for j, ex, kind, detail in unscheduled:
@@ -239,6 +275,16 @@ class Simulator:
         """Cash + holdings + receivables. Buying power is cash only."""
         return self.cash + self.holdings_value() + self.receivables_value()
 
+    def _drop(self, pos: Position):
+        """Remove a holding from the book (open positions or merged shares awaiting sale)."""
+        if self.positions.get(pos.j) is pos:
+            del self.positions[pos.j]
+        elif pos in self.side_sells:
+            self.side_sells.remove(pos)
+
+    def _locked(self, t, j):
+        return self.m.locked(t, j, self.prev[t, j])
+
     def _reject(self, t, j, reason, **kw):
         self.rejected.append({"date": self._date(t), "SecurityID": self._id(j), "reason": reason, **kw})
 
@@ -251,10 +297,7 @@ class Simulator:
         self.cash += value - ch.total
         self.costs_today += ch.total
         self._record_trade(t, pos, value, ch.total, px, reason, at)
-        if self.positions.get(pos.j) is pos:
-            del self.positions[pos.j]
-        elif pos in self.side_sells:
-            self.side_sells.remove(pos)
+        self._drop(pos)
 
     def _record_trade(self, t, pos: Position, value, sell_charges, px, reason, at):
         gross = value + pos.income - pos.cost_basis
@@ -276,7 +319,7 @@ class Simulator:
             if not np.isfinite(o):
                 self._log_unfilled(t, pos.j, "sell", "not traded")
                 continue
-            if self.m.locked(t, pos.j) == "down":
+            if self._locked(t, pos.j) == "down":
                 self._log_unfilled(t, pos.j, "sell", "locked")
                 continue
             self._sell(t, pos, o, pos.exit_reason, "open")
@@ -294,7 +337,7 @@ class Simulator:
             why = None
             if not np.isfinite(op):
                 why = "not traded"
-            elif self.m.locked(t, j) == "up":
+            elif self._locked(t, j) == "up":
                 why = "locked"
             if why:
                 o.age += 1
@@ -303,6 +346,10 @@ class Simulator:
                     self._reject(t, j, "expired", detail=why)
                 else:
                     keep.append(o)
+                continue
+            if j in self.positions or any(q.j == j for q in self.side_sells):
+                # shares of j arrived after the order was placed (a merger): never overwrite a holding
+                self._reject(t, j, "held", detail="already held at fill")
                 continue
             px = c.fill_price("buy", op)
             per_share = px * (1 + (c.stt_pct + c.transaction_pct * (1 + c.gst_pct / 100)
@@ -357,7 +404,7 @@ class Simulator:
                 fill = (tgt, "target", "target")
             if fill is None:
                 continue
-            if self.m.locked(t, p.j) == "down":
+            if self._locked(t, p.j) == "down":
                 # locked at the lower circuit: cannot sell today, sell at the next possible open
                 p.exit_reason, p.exit_signal_t = fill[1], t
                 self._log_unfilled(t, p.j, "sell", "locked")
@@ -394,7 +441,7 @@ class Simulator:
 
     def _decide_exits(self, t):
         ex, mh = self.s.exit, self.s.max_hold_days
-        mem = self.m.members if self.cfg.on_universe_exit == "sell" else None
+        mem = self.m.members if self.cfg.eligibility.on_universe_exit == "sell" else None
         for p in self.positions.values():
             if p.exit_reason:
                 continue
@@ -419,7 +466,7 @@ class Simulator:
     def _decide_entries(self, t, equity):
         ent = self.s.entry[t]
         held = set(self.positions) | {o.j for o in self.buys}
-        cand = np.flatnonzero(ent & np.isfinite(self.m.close[t]))
+        cand = np.flatnonzero(ent & self.eligible[t])
         cand = np.array([j for j in cand if j not in held], dtype=int)
         if not len(cand):
             return
@@ -475,33 +522,36 @@ class Simulator:
             self.cash += sum(r.amount for r in due)
             self.receivables = [r for r in self.receivables if r.due_t > t]
         for j, ex, kind, detail in self.unscheduled.get(t, ()):
-            if j in self.positions:
+            if any(p.j == j for p in self._held()):
                 self.warnings.append(f"{self._id(j)}: {kind} ({detail}) ex {ex.date()} has no effective date "
                                      f"in the store; not applied to the open position")
-        # mergers last: shares received today are not entitled to the acquirer's own events today
+        # order: value and share events, then mergers (shares received today are not entitled to the
+        # acquirer's own events today), then delistings (which also reach shares converted today)
         todays = self.events.get(t, ())
-        for e in [x for x in todays if x.kind != "merger"] + [x for x in todays if x.kind == "merger"]:
-            pos = self.positions.get(e.j)
-            if pos is None:
-                continue
-            before = pos.shares
-            if e.kind == "merger":
-                how = self._merger(t, pos, e)
-                amount, due_t = 0.0, None
-            elif e.kind == "delisting":
-                amount, due_t, how = self._delist(t, pos, e), None, self.cfg.ledger.delisting
-            elif e.is_share:
-                self._share_event(pos, e.factor)
-                amount, due_t, how = 0.0, None, "shares"
-            else:
-                amount, due_t, how = self._value_event(t, pos, e)
-            self.ledger_log.append({"date": self._date(t), "SecurityID": self._id(e.j), "kind": e.kind,
-                                    "detail": e.detail, "factor": e.factor, "prev_close": self.m.prev_close[t, e.j],
-                                    "shares_before": before,
-                                    "shares_after": pos.shares, "amount": amount, "treatment": how,
-                                    "due_date": (self._date(due_t) if due_t is not None and due_t < len(self.m.dates)
-                                                 else None if due_t is None else "after data end"),
-                                    "approx": e.approx})
+        rank = {"merger": 1, "delisting": 2}
+        for e in sorted(todays, key=lambda x: rank.get(x.kind, 0)):
+            for pos in [p for p in self._held() if p.j == e.j]:
+                self._apply(t, e, pos)
+
+    def _apply(self, t, e: Event, pos: Position):
+        before = pos.shares
+        if e.kind == "merger":
+            how = self._merger(t, pos, e)
+            amount, due_t = 0.0, None
+        elif e.kind == "delisting":
+            amount, due_t, how = self._delist(t, pos, e), None, self.cfg.ledger.delisting
+        elif e.is_share:
+            self._share_event(pos, e.factor)
+            amount, due_t, how = 0.0, None, "shares"
+        else:
+            amount, due_t, how = self._value_event(t, pos, e)
+        self.ledger_log.append({"date": self._date(t), "SecurityID": self._id(e.j), "kind": e.kind,
+                                "detail": e.detail, "factor": e.factor, "prev_close": self.m.prev_close[t, e.j],
+                                "shares_before": before,
+                                "shares_after": pos.shares, "amount": amount, "treatment": how,
+                                "due_date": (self._date(due_t) if due_t is not None and due_t < len(self.m.dates)
+                                             else None if due_t is None else "after data end"),
+                                "approx": e.approx})
 
     def _due_calendar(self, e: Event, days: int) -> int:
         return int(self.m.dates.searchsorted(e.ex_date + pd.Timedelta(days=days), side="left"))
@@ -582,9 +632,9 @@ class Simulator:
         px = e.value if known else pos.last_close * delisting_value(self.cfg.ledger.delisting)
         value = pos.shares * px
         self.cash += value
-        why = "delisted" if e.detail == "delisted" else f"stopped trading ({self.cfg.ledger.unknown_grace_days}-day grace)"
+        why = f"{e.detail}: stopped trading ({self.cfg.ledger.grace_days}-day grace)"
         self._record_trade(t, pos, value, 0.0, px, why, "stated value" if known else self.cfg.ledger.delisting)
-        del self.positions[pos.j]
+        self._drop(pos)
         return value
 
     def _scale_levels(self, pos: Position, f: float):
@@ -595,44 +645,53 @@ class Simulator:
                 setattr(pos, name, v * f)
 
     def _merger(self, t, pos: Position, e: Event) -> str:
-        """Convert the parent holding into each acquirer's shares at its scheme ratio, plus any cash
-        component. Fractions become cash in lieu at the acquirer's close. convert_then_sell sells
-        each component at the acquirer's next open. Cost basis and buy charges are split across the
-        components by their value at the previous close (all to the first when a price is missing)."""
+        """Convert the parent holding into each acquirer's shares at its scheme ratio, plus any cash.
+
+        Components are valued at the acquirer's previous close, adjusted for its own corporate
+        actions that day. A component with no price yet (it lists later) is valued from what is
+        left of the parent's last close. A component whose security is not in the market is
+        credited as cash at that value. Cost basis and buy charges are split by value across the
+        components that are held. Fractions become cash in lieu at the acquirer's close.
+        convert_then_sell sells each held component at the acquirer's next open."""
         j = pos.j
-        del self.positions[j]
-        S = pos.shares
+        self._drop(pos)
+        S, parent_px = pos.shares, pos.last_close
         if e.cash:
             amount = S * e.cash
             self.cash += amount
             pos.income += amount
             self._credit(t, j, amount)
         parts = [(e.to_j, e.ratio)] + list(e.extra)
-        missing = [k for k, _ in parts if k < 0]
-        parts = [(k, r) for k, r in parts if k >= 0]
-        if missing:
-            self.warnings.append(f"{self._id(j)}: {len(missing)} merger component(s) not in the market; "
-                                 + ("their value is not credited" if parts else "closed at the last close"))
-        if not parts:
-            if e.cash:
-                self._record_trade(t, pos, 0.0, 0.0, pos.last_close, "merger", "cash component")
-                return "cash"
-            self._sell(t, pos, pos.last_close, "merger", "last close (acquirer not loaded)")
-            return "closed at last close"
-        vals = [S * r * self.m.prev_close[t, k] for k, r in parts]
-        w = [v / sum(vals) for v in vals] if all(np.isfinite(vals)) and sum(vals) > 0 else \
-            [1.0] + [0.0] * (len(parts) - 1)
+        vals = [S * r * self.prev[t, k] if k >= 0 and np.isfinite(self.prev[t, k]) else np.nan for k, r in parts]
+        unknown = [i for i, v in enumerate(vals) if not np.isfinite(v)]
+        if unknown:
+            known = sum(v for v in vals if np.isfinite(v))
+            rest = max(S * parent_px - S * e.cash - known, 0.0) if np.isfinite(parent_px) else 0.0
+            for i in unknown:
+                vals[i] = rest / len(unknown)
+        cash_out = sum(v for (k, _), v in zip(parts, vals) if k < 0)
+        if cash_out:
+            self.cash += cash_out
+            pos.income += cash_out
+            self._credit(t, j, cash_out)
+            self.warnings.append(f"{self._id(j)}: merger component(s) not in the market; credited as cash at "
+                                 f"the parent's close (Rs {cash_out:,.2f})")
+        held_parts = [(k, r, v) for (k, r), v in zip(parts, vals) if k >= 0]
+        if not held_parts:
+            self._record_trade(t, pos, 0.0, 0.0, parent_px, "merger", "acquirer not loaded (cash)")
+            return "cash"
+        total = sum(v for _, _, v in held_parts)
+        w = [v / total for _, _, v in held_parts] if total > 0 else [1.0 / len(held_parts)] * len(held_parts)
         sell = self.cfg.ledger.merger == "convert_then_sell"
         origin = pos.from_j if pos.from_j is not None else j
         charges, basis = pos.buy_charges, pos.cost_basis
         out = []
-        for i, ((k, r), wi) in enumerate(zip(parts, w)):
+        for i, ((k, r, v), wi) in enumerate(zip(held_parts, w)):
             q = pos if i == 0 else Position(j=k, shares=0, entry_t=pos.entry_t, signal_t=pos.signal_t,
                                             entry_price=0.0, buy_charges=charges, exit_reason=pos.exit_reason,
                                             exit_signal_t=pos.exit_signal_t)
             whole, frac = split_shares(S, 1.0 / r)
-            pc = self.m.prev_close[t, k]
-            q.last_close = pc if np.isfinite(pc) else pos.last_close / r
+            q.last_close = v / (S * r) if S * r else 0.0
             q.cost_basis = basis * wi
             q.buy_charges = Charges(*(getattr(charges, f) * wi for f in
                                       ("brokerage", "stt", "transaction", "sebi", "gst", "stamp", "dp")))
@@ -683,7 +742,7 @@ class Simulator:
             self.in_lieu.append((pos, frac))
         if whole == 0:
             # a consolidation left less than one share: the holding becomes cash in lieu
-            del self.positions[pos.j]
+            self._drop(pos)
 
     def _settle_in_lieu(self, t):
         """Pay fractional entitlements at the ex-date raw close."""

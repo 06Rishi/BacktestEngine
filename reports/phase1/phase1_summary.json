@@ -1,6 +1,6 @@
 {
   "store": {
-    "built_utc": "2026-11-12T19:17:16+00:00",
+    "built_utc": "2026-11-13T07:57:15+00:00",
     "parse_errors": [],
     "n_parse_errors": 0,
     "price_rows_parsed": 5001751,
@@ -37,6 +37,50 @@
     "exact_actions_price_not_confirmed": 1,
     "exact_actions_not_applied": 1,
     "inferred_from_isin_change": 7,
+    "ca_overrides_applied": [
+      {
+        "SecurityID": "INE030A01027",
+        "Symbol": "HINDUNILVR",
+        "ex_date": "2025-12-05",
+        "kind": "arrangement",
+        "factor": 0.983673
+      },
+      {
+        "SecurityID": "INE461C01038",
+        "Symbol": "GREENPLY",
+        "ex_date": "2019-07-12",
+        "kind": "arrangement",
+        "factor": 0.991392
+      },
+      {
+        "SecurityID": "INE483S01012",
+        "Symbol": "CCAVENUE",
+        "ex_date": "2020-12-10",
+        "kind": "arrangement",
+        "factor": 0.990433
+      },
+      {
+        "SecurityID": "INE530B01024",
+        "Symbol": "IIFL",
+        "ex_date": "2017-10-17",
+        "kind": "arrangement",
+        "factor": 0.981393
+      },
+      {
+        "SecurityID": "INE494B01023",
+        "Symbol": "TVSMOTOR",
+        "ex_date": "2025-08-25",
+        "kind": "arrangement",
+        "factor": 0.987859
+      },
+      {
+        "SecurityID": "INE105A01035",
+        "Symbol": "TVSHLTD",
+        "ex_date": "2026-09-08",
+        "kind": "arrangement",
+        "factor": 0.966541
+      }
+    ],
     "unexplained_jumps": 277
   },
   "mapping": {
@@ -55,9 +99,9 @@
   },
   "reconciliation": {
     "pairs": 856,
-    "pairs_flat": 637,
-    "pairs_with_steps": 219,
-    "steps": 1282
+    "pairs_flat": 638,
+    "pairs_with_steps": 218,
+    "steps": 1279
   },
   "membership": {
     "repaired": {
@@ -232,5 +276,12 @@
       "PRIF IN Equity"
     ]
   },
-  "seconds": 126.1
+  "lifecycle": {
+    "unknown": 576,
+    "truncated": 104,
+    "delisted": 89,
+    "merged": 49,
+    "suspended": 7
+  },
+  "seconds": 118.2
 }

@@ -180,7 +180,8 @@ def unexplained_jumps(px: pd.DataFrame, actions: pd.DataFrame, jump: float = JUM
 
 # --------------------------------------------------------------------------- build
 
-def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None) -> dict:
+def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None,
+          ca_overrides: Path | None = None) -> dict:
     store_dir = Path(store_dir)
     store_dir.mkdir(parents=True, exist_ok=True)
     log.info("parsing raw files ...")
@@ -219,6 +220,7 @@ def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None) -> 
     inf = corpactions.infer_from_isin_changes(px, ev) if len(ev) else pd.DataFrame()
     if len(inf):
         ev = pd.concat([ev, inf], ignore_index=True)
+    ev, ca_over = corpactions.apply_overrides(ev, ca_overrides)
     ev.to_parquet(store_dir / "corporate_actions.parquet", index=False)
     uj = unexplained_jumps(px, ev)
     uj.to_parquet(store_dir / "unexplained_jumps.parquet", index=False)
@@ -300,6 +302,7 @@ def build(raw_dir: Path, store_dir: Path, reference_dir: Path | None = None) -> 
         "exact_actions_price_not_confirmed": int((ev["price_confirms"] == False).sum()),  # noqa: E712
         "exact_actions_not_applied": int((~ev["applied"].astype(bool)).sum()),
         "inferred_from_isin_change": int((ev["kind"] == "inferred_split").sum()),
+        "ca_overrides_applied": ca_over,
         "unexplained_jumps": int(len(uj)),
     })
     (store_dir / "build_report.json").write_text(json.dumps(rep, indent=2, default=str))

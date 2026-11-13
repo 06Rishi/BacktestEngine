@@ -2,7 +2,7 @@ parent,parent_symbol,last_trade,effective_date,acquirer,acquirer_symbol,ratio,ca
 INE648A01026,SBBJ,2017-03-15,2017-03-16,INE062A01020,SBIN,28/10,,2.7829,SBI board 18-Aug-2016 swap ratio (28 SBI per 10 SBBJ); NSE suspension notice 06-Mar-2017,
 INE651A01020,MYSOREBANK,2017-03-15,2017-03-16,INE062A01020,SBIN,22/10,,2.1851,SBI board 18-Aug-2016 swap ratio (22 SBI per 10 SBM); NSE suspension notice 06-Mar-2017,
 INE654A01024,SBT,2017-03-15,2017-03-16,INE062A01020,SBIN,22/10,,2.1949,SBI board 18-Aug-2016 swap ratio (22 SBI per 10 SBT); NSE suspension notice 06-Mar-2017,
-INE910H01017,CAIRN,2017-04-25,2017-04-26,INE205A01025,VEDL,1,40,,NSE filing CAIRN record date 27-Apr-2017: 1 Vedanta + 4 x Rs 10 7.5% RPS (cash exit at par = Rs 40) per share,
+INE910H01017,CAIRN,2017-04-25,2017-04-26,INE205A01025,VEDL,1,57.70,,NSE filing CAIRN record date 27-Apr-2017: 1 Vedanta + 4 x Rs 10 7.5% RPS (cash exit at par = Rs 40) + interim dividend Rs 17.70 per Cairn share paid by Vedanta to Cairn holders (filing 12-Apr-2017) = Rs 57.70 cash,
 INE353G01020,DISHMAN,2017-05-29,2017-05-30,INE385W01011,DCAL,1,,,NSE filing DISHMAN 19-May-2017: 1 DCAL per 1 DPCL; acquirer listed 21-Sep-2017,
 INE069A01017,ABIRLANUVO,2017-07-04,2017-07-05,INE047A01013,GRASIM,15/10,,1.4894,NSE filing ABIRLANUVO 20-Jun-2017: 15 Grasim per 10 ABNL,
 INE149A01025,TUBEINVEST,2017-08-23,2017-08-24,INE149A01033,TIFIN,1,,,"Scheme of arrangement 2017, record date 28-Aug-2017: holding continues as TI Financial Holdings (new ISIN INE149A01033)",

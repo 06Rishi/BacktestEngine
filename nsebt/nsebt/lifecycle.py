@@ -6,7 +6,7 @@ Every security whose last trade is before the end of the data is classified once
   truncated  last trade within 5 trading days of the data end   marked at the last close; not a delisting
   delisted   on NSE's delisted list (delisted.csv)              exit under the delisting policy
   suspended  on NSE's suspension list (suspension.csv)          hold at the last close; stops can't fill
-  unknown    none of the above                                  suspended for `unknown_grace_days`, then delisted
+  unknown    none of the above                                  held for `grace_days`, then the delisting policy
 
 `lifecycle_overrides.csv` (manual, every row citing a source) sets the class from NSE notices and
 filings where NSE's lists are silent: the NSE lists end in 2020 (delisted) and 2012 (suspension).
@@ -135,6 +135,7 @@ def classify(securities: pd.DataFrame, calendar, symbols: pd.DataFrame | None = 
             row.update(cls="unknown", source="data")
         rows.append(row)
     out = pd.DataFrame(rows, columns=COLUMNS)
+    out["data_end"] = cal[-1]            # the store's last day when classified (stale if the store moves on)
     return out.sort_values(["last_trade", "SecurityID"]).reset_index(drop=True)
 
 

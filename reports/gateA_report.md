@@ -2,12 +2,68 @@
 
 Date 2026-11-13. Spec: `docs/phase45_amendments.md`. Progress log: `reports/phase45_progress.md`.
 
-**Status.** M1.1–M2.6 are complete and pushed. 233 of 233 tests pass in about 5 s.
+**Status.** M1.1–M2.6 are complete. 257 of 257 tests pass in about 7 s. After the independent review (section 0), every finding the user approved fixing is fixed, and the validation passes again.
 
-**Gate A follow-up (2026-11-13):**
-- Approved: the reconciliation method (section 6, item 1).
-- Resolved from NSE filings: all merger ratios and every stopped Nifty 500 member (items 2 and 3). Details are in `reports/phase45_conversions.md`.
-- Milestones 3–5 can start once you confirm the resolutions below.
+---
+
+## 0. Independent review and fixes (2026-11-13)
+
+Three independent reviewers looked at the work: architecture, correctness and data. Their findings, and what was done about each:
+
+**Engine bugs, all reproduced and fixed, each with a regression test (`test_m2_review_fixes.py`):**
+
+| # | Bug | Fix |
+|---|---|---|
+| 1 | A buy filled on the day merged shares arrived overwrote them | The fill is rejected as "held" |
+| 2 | Merged shares awaiting sale missed the acquirer's split, dividend, delisting or merger | Events reach every holding of the security |
+| 3 | Shares converted into an acquirer delisted the same day never exited | Day order: value and share events, then mergers, then delistings |
+| 4 | A merger component that listed later was marked at up to 4× its value | Valued from the rest of the parent's last close |
+| 5 | An unloaded acquirer with a cash component lost the share value | Credited as cash at the parent's close, with no trading costs |
+| 6 | A flat bar after a split was read as a locked circuit | The circuit test uses the previous close adjusted for the day's events |
+| 7 | `on_universe_exit: sell` did nothing without membership data | The simulator raises |
+
+The reviewer's random test (3,000 scenarios with real costs and every event kind) now fails 0 times; it failed 20 before. An accounting-identity test over random scenarios is in the suite.
+
+**Corporate-action data errors the reconciliation could not see, now fixed:**
+- **Rights premiums written as "Premium Of Rs", "Prm Rs", "Premium 91" or "Partly Paid @"** were not parsed, so the factor was 1.0. The parser is fixed, with a test.
+  - IDEA 2019 is now 0.604 (the price fell to 0.629); before, it showed a phantom −37%.
+  - ABFRL 2020, VHLTD 2024 and RELTD 2026 are also fixed.
+- **Six member events** that the automatic rules set to 1.0 now carry sourced factors in `ca_overrides.csv`, applied by `nsebt build`:
+  - demergers under the 3% gap threshold: HINDUNILVR 2025 (Kwality Wall's), GREENPLY 2019, CCAVENUE 2020, IIFL 2017 (5paisa), each at the ex-date open gap, the method used for every demerger;
+  - bonus preference shares: TVSMOTOR 2025 (4 × ₹10) and TVSHLTD 2026 (46 × ₹10, approximate).
+- **CAIRN's cash** is ₹57.70: ₹40 of preference shares plus the ₹17.70 Vedanta interim dividend paid to Cairn holders.
+- **Cross-check against Bloomberg's independently adjusted prices** (`reports/phase1/ca_reconciliation.csv`, rebuilt):
+  - IDEA's agreement went from 0.605 to 0.999. The ABFRL, HINDUNILVR 2025 and IIFL steps disappeared, and CCAVENUE improved.
+  - For TVSMOTOR's preference-share bonus and GREENPLY, Bloomberg made no adjustment, so a step of 1.2% and 0.9% now appears there. This is a methodology difference: the preference shares and the demerged shares carry real value.
+
+**Validation, restated honestly:**
+- Check (a) proves the engine applies the corporate-action table correctly. Both sides read the same table, so it cannot see errors in the table itself; the earlier wording that it catches "missed events and ISIN breaks" overstated it.
+- Check (b) is a code-path check.
+- **New (c):** every member factor is compared with the actual ex-date price move.
+- **New (d):** a full-ledger run holds every member through its conversions and lifecycle exits.
+
+**Architecture and decisions approved by the user:**
+- **Run schema v2:**
+  - `data_inputs`: hashes of corporate actions, membership, lifecycle, `mergers.csv`, `lifecycle_overrides.csv`, `ca_overrides.csv` and the build report;
+  - `signals_hash`;
+  - `strategy_source_hash`;
+  - the eligibility config and ADV window in the `sim` block;
+  - untracked files now count as "dirty".
+- **One way in:** `backtest/market.py: from_store(cfg)` builds the market every time, with the corporate actions, mergers, lifecycle (refused if stale) and acquirers loaded as non-members. `SimConfig.from_config` reads every block, including `eligibility`.
+- **Eligibility (A4) is enforced by the engine:** member, traded, raw close ≥ ₹10, ADV ≥ ₹1 crore, and the strategy's warm-up mask. Signals may carry `dates`/`ids` labels that must equal the market's. The ADV window must match the eligibility config.
+- **Stopped securities:** delisted, suspended-without-resuming and unknown are all held for 60 trading days (`grace_days`), then exit at the stated value or under the delisting policy. Before, known delistings exited at once, which used hindsight to free cash early, and suspended stocks were held forever.
+- **`lifecycle.parquet`** is rebuilt on every `nsebt build` and daily update, records its data end, and `from_store` refuses a stale copy.
+
+**Reviewed and left as is:**
+- The stops, target and trailing reference are scaled on dividend days. A6 says the trailing reference is "adjusted by factor on corporate-action days".
+- The 5 event-days flagged by check (c) are all explained:
+  - EASEMYTRIP, NAZARA and VSTIND rallied on their bonus ex-dates;
+  - ONGC's ex-date was the 23-Mar-2020 crash;
+  - IGARASHI's 25:202 bonus is confirmed by the BSE notice (ex 27-Sep-2018); the price simply didn't fall that day.
+
+**Open, for M3–M4:**
+- Variable stop and trail distances (ATR exits) and a `Market.slice` for walk-forward windows, to settle at the M3.1 interface freeze.
+- The A12 vectorised random-3 baseline should reuse the engine's per-security hold paths rather than a second ledger.
 
 ---
 
@@ -44,18 +100,20 @@ Test names: `.venv/bin/pytest --collect-only -q`.
 
 The round trip costs **₹42.0377**, or 0.350% (spec: ₹42.04 ± 0.01). Slippage of 10 bps per side is applied to the fill price, separately from these charges.
 
-## 3. Reconciliation (amendment 2.6)
+## 3. Validation (amendment 2.6)
 
-Universe: all 903 securities that were Nifty 500 members in 2016–2026, over 2,530 days (store version `f74312a5eb8204af`). Run it with `nsebt reconcile`. The full output is in `reports/phase45_reconciliation.md` and its CSVs.
+Run with `nsebt reconcile`. Output: `reports/phase45_reconciliation.md` and its CSVs. Store rebuilt after the data fixes.
 
-| Check | Result |
-|---|---|
-| (a) Reinvest-equivalent engine vs total-return adjusted close: securities with any day outside 1e-6 | **0 of 903** (the S4 threshold is 0.5%) |
-| (a) Security-days compared; largest daily error | 1,853,369; 4.4e-16 |
-| (b) Receivable mode: value preserved on each ex-date to 1e-6 | **8,128 of 8,128** events (7,517 dividends, 471 special dividends, 75 demergers, 65 rights) |
-| Value events with no factor | 0 affect a Nifty 500 holding (of 306 such rows, 271 predate the data, 32 have no effective date, and 2 are other securities) |
+| Check | What it proves | Result |
+|---|---|---|
+| (a) Reinvest-equivalent engine vs total-return adjusted close, every day, 1e-6 | The engine applies the table correctly (not the table itself) | **903 of 903** securities (S4 threshold 0.5%); 1,853,369 security-days; max error 4.4e-16 |
+| (b) Receivable mode: value preserved on each ex-date | Receivable code path; table prior close agrees with prices | **8,128 of 8,128** events |
+| (c) Table vs prices: combined factor vs ex-date open and close | The table itself, independently | 5 of 784 member event-days flagged, all explained (section 0) |
+| (d) Full ledger run with conversions and lifecycle exits | Accounting identity, no negative cash | **Pass**: error 0; 49 conversions, 32 lifecycle exits, 0 warnings |
 
-The checks are proven to detect errors. Mutation tests fail as expected when an event is dropped, a factor is reversed, an effective date moves by one day, or a prior close is wrong.
+Membership has 906 securities. Three REITs (EMBASSY, BIRET, BAGMANE; members from October 2026) are not in the EQ/BE/BZ panel.
+
+Mutation tests confirm (a) fails when an event is dropped, a factor is reversed or an effective date moves. A table test confirms (c) flags an IDEA-like rights row.
 
 ## 4. Speed
 
@@ -63,7 +121,7 @@ The checks are proven to detect errors. Mutation tests fail as expected when an 
 |---|---|
 | Load the Nifty 500 panel (raw prices plus the total-return adjusted series) | 5.3 |
 | One backtest: 3 positions, random signals, full costs, 903 securities × 2,530 days | 0.7 |
-| **Single backtest including the load** (target ≤ 30) | **6.0** |
+| **Single backtest including the load via `market.from_store`** (target ≤ 30) | **5.7** |
 | Both reconciliation runs, every security held at once | 3.1 + 3.3 |
 
 ## 5. What the engine now does with corporate actions
@@ -155,7 +213,8 @@ The checks are proven to detect errors. Mutation tests fail as expected when an 
 | `corporate_actions.demerger_realise_lag_days` | 60 calendar days |
 | `corporate_actions.merger` | `convert_then_sell` |
 | `corporate_actions.delisting` | `haircut(50)` |
-| `corporate_actions.unknown_grace_days` | 60 trading days |
+| `corporate_actions.grace_days` (was `unknown_grace_days`) | 60 trading days, for delisted, suspended and unknown |
+| `paths.ca_overrides` | `ca_overrides.csv` (also added to the backup list) |
 | `eligibility.min_price` | ₹10 |
 | `eligibility.min_adv` | ₹1 crore |
 | `eligibility.adv_days` | 20 |

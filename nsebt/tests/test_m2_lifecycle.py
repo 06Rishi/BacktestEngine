@@ -79,19 +79,28 @@ def run(m, ledger=LedgerConfig(), **kw):
 
 @pytest.mark.parametrize("policy,price", [("haircut(50)", 50.0), ("last_close", 100.0), ("zero", 0.0),
                                           ("haircut(20)", 80.0)])
-def test_delisted_exits_under_each_policy(policy, price):
+def test_delisted_exits_under_each_policy_after_the_grace(policy, price):
     m = stopped_market("delisted")
-    sim, r = run(m, LedgerConfig(delisting=policy))
+    sim, r = run(m, LedgerConfig(delisting=policy, grace_days=3))
     t = r.trades.iloc[0]
-    assert t["exit_reason"] == "delisted" and t["exit_at"] == policy and t["exit_date"] == m.dates[4]
+    assert t["exit_reason"].startswith("delisted") and t["exit_at"] == policy and t["exit_date"] == m.dates[4 + 3]
     assert t["exit_price"] == pytest.approx(price) and t["costs"] == 0
-    assert r.daily["cash"].iloc[4] == pytest.approx(30_000 - 1000 + 10 * price)
+    assert (r.daily["equity"].iloc[3:7] == 30_000).all()              # held at the last close in the grace
+    assert r.daily["cash"].iloc[7] == pytest.approx(30_000 - 1000 + 10 * price)
     assert not sim.positions
+
+
+def test_suspended_without_resuming_exits_under_the_policy_after_the_grace():
+    m = stopped_market("suspended", n=12)
+    sim, r = run(m, LedgerConfig(grace_days=4))
+    t = r.trades.iloc[0]
+    assert t["exit_reason"].startswith("suspended") and t["exit_date"] == m.dates[8]
+    assert t["exit_price"] == pytest.approx(50)
 
 
 def test_unknown_held_through_grace_then_delisted():
     m = stopped_market("unknown", n=12)
-    sim, r = run(m, LedgerConfig(unknown_grace_days=5))
+    sim, r = run(m, LedgerConfig(grace_days=5))
     t = r.trades.iloc[0]
     assert t["exit_date"] == m.dates[4 + 5] and t["exit_price"] == pytest.approx(50)
     assert "grace" in t["exit_reason"]
@@ -156,6 +165,6 @@ def test_overrides_validation(tmp_path, bad):
 def test_stated_delisting_value_overrides_the_policy():
     m = stopped_market("delisted")
     m.lifecycle["value"] = 0.0
-    sim, r = run(m, LedgerConfig(delisting="last_close"))
+    sim, r = run(m, LedgerConfig(delisting="last_close", grace_days=2))
     t = r.trades.iloc[0]
     assert t["exit_price"] == 0 and t["exit_at"] == "stated value" and t["net_pnl"] == pytest.approx(-1000)
