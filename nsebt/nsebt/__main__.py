@@ -220,6 +220,26 @@ def cmd_mergers(a):
     mergers.load(path)       # validate
 
 
+def cmd_lifecycle(a):
+    """Classify securities that stopped trading into data/store/lifecycle.parquet."""
+    import pandas as pd
+    from . import lifecycle
+    from .nsefetch import LIFECYCLE_FILES, NSEClient
+    cfg = _cfg(a)
+    store, ref = cfg.path("store"), cfg.path("nse_reference")
+    if a.fetch:
+        try:
+            NSEClient(cfg.path("nse_raw"), cfg.politeness).fetch_reference(ref, files=LIFECYCLE_FILES)
+        except Exception as e:      # fallback: the cached lists, or classification from the data alone
+            print(f"warning: NSE lists not fetched ({e}); using cached copies if any")
+    out = lifecycle.build(store, ref, cfg.root / cfg.raw["paths"].get("mergers", "mergers.csv"))
+    mem = set(pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna())
+    print(f"{store / 'lifecycle.parquet'}: {len(out)} securities stopped trading before the end of the data")
+    print(pd.DataFrame({"all": out["cls"].value_counts(),
+                        "Nifty 500 members": out[out["SecurityID"].isin(mem)]["cls"].value_counts()})
+          .fillna(0).astype(int).to_string())
+
+
 # --------------------------------------------------------------------------- research (legacy)
 
 def _legacy_load(a):
@@ -327,6 +347,10 @@ def main(argv=None):
     mg.add_argument("--seed", action="store_true", help="add stopped Nifty 500 members and merger announcements")
     mg.add_argument("--check", action="store_true", help="print each filled ratio next to the price-implied one")
     mg.set_defaults(fn=cmd_mergers)
+
+    lc = sub.add_parser("lifecycle", help="classify securities that stopped trading (lifecycle.parquet)")
+    lc.add_argument("--fetch", action="store_true", help="download NSE's delisted and suspension lists first")
+    lc.set_defaults(fn=cmd_lifecycle)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")

@@ -46,6 +46,12 @@ REFERENCE_FILES = {
     "ind_nifty500list.csv": "https://niftyindices.com/IndexConstituent/ind_nifty500list.csv",
 }
 
+# NSE's published lists of delisted and suspended securities (used by the lifecycle table)
+LIFECYCLE_FILES = {
+    "delisted.csv": f"{BASE}/content/equities/delisted.csv",
+    "suspension.csv": f"{BASE}/content/equities/suspension.csv",
+}
+
 
 def url_and_name(source: str, d: date) -> tuple[str, str]:
     mon = MONTHS[d.month - 1]
@@ -250,13 +256,14 @@ class NSEClient:
                 log.info("%d/%d dates (%s) %s; %.0f min elapsed", i, len(cand), d, res.summary(), el / 60)
         return res
 
-    def fetch_reference(self, ref_dir: Path, stamp: date | None = None) -> dict[str, Path]:
-        """Today's copies of the listed-securities, symbol-change and Nifty 500 files,
+    def fetch_reference(self, ref_dir: Path, stamp: date | None = None,
+                        files: dict[str, str] | None = None) -> dict[str, Path]:
+        """Today's copies of the listed-securities, symbol-change and Nifty 500 files (or `files`),
         saved with a date stamp (they change over time)."""
         stamp = stamp or date.today()
         ref_dir = Path(ref_dir)
         out = {}
-        for name, url in REFERENCE_FILES.items():
+        for name, url in (REFERENCE_FILES if files is None else files).items():
             p = ref_dir / f"{Path(name).stem}_{stamp:%Y%m%d}{Path(name).suffix}"
             if p.exists() and p.stat().st_size > 0:
                 out[name] = p

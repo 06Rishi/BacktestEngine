@@ -26,6 +26,7 @@ SHARE_KINDS = ("split", "bonus", "consolidation", "inferred_split")
 VALUE_KINDS = ("dividend", "special_dividend", "rights", "arrangement")
 APPROX_KINDS = ("rights", "arrangement")      # theoretical / price-implied values
 
+RE_HAIRCUT = re.compile(r"^haircut\((\d+(?:\.\d+)?)\)$")
 RE_RS = re.compile(r"r[se]\.?\s*(\d+(?:\.\d+)?)", re.I)
 
 OPTIONS = {
@@ -45,13 +46,20 @@ class LedgerConfig:
     demerger: str = "receivable"
     demerger_realise_lag_days: int = 60      # calendar days
     merger: str = "convert_then_sell"
+    delisting: str = "haircut(50)"           # haircut(N) | last_close | zero: value received on delisting
+    unknown_grace_days: int = 60             # trading days an unexplained stop is held before it counts as delisted
 
     def __post_init__(self):
         for key, allowed in OPTIONS.items():
             v = getattr(self, key)
             if v not in allowed:
                 raise ValueError(f"corporate_actions.{key}: '{v}' is not one of {list(allowed)}")
-        for key in ("dividend_pay_lag_days", "rights_realise_lag_days", "demerger_realise_lag_days"):
+        try:
+            delisting_value(self.delisting)
+        except ValueError as e:
+            raise ValueError(f"corporate_actions.delisting: {e}") from None
+        for key in ("dividend_pay_lag_days", "rights_realise_lag_days", "demerger_realise_lag_days",
+                    "unknown_grace_days"):
             v = getattr(self, key)
             if not isinstance(v, (int, np.integer)) or isinstance(v, bool) or v < 0:
                 raise ValueError(f"corporate_actions.{key}: must be a whole number ≥ 0, got {v!r}")
@@ -84,11 +92,22 @@ class Event:
 
     @property
     def order(self) -> int:
-        """Same-day order per security: value events, then share events, then a merger."""
-        return 2 if self.kind == "merger" else 1 if self.is_share else 0
+        """Same-day order per security: value events, share events, merger, delisting."""
+        return {"merger": 2, "delisting": 3}.get(self.kind, 1 if self.is_share else 0)
 
 
 # --------------------------------------------------------------------------- pure helpers
+
+def delisting_value(policy: str) -> float:
+    """Fraction of the last close received on delisting: haircut(50) -> 0.5, last_close -> 1, zero -> 0."""
+    if policy == "last_close":
+        return 1.0
+    if policy == "zero":
+        return 0.0
+    m = RE_HAIRCUT.match(str(policy))
+    if not m or float(m.group(1)) > 100:
+        raise ValueError(f"'{policy}' is not haircut(N) with 0 ≤ N ≤ 100, last_close or zero")
+    return 1.0 - float(m.group(1)) / 100
 
 def dividend_amount(detail) -> float:
     """₹ per share from a detail such as 'Rs 2.10'; NaN when absent."""
@@ -128,7 +147,8 @@ def split_shares(shares: int, factor: float) -> tuple[int, float]:
 # --------------------------------------------------------------------------- scheduling
 
 def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
-             mergers: pd.DataFrame | None = None):
+             mergers: pd.DataFrame | None = None, lifecycle: pd.DataFrame | None = None,
+             unknown_grace_days: int = 60):
     """Map corporate-action rows (and merger rows from mergers.load) onto the market calendar.
 
     Returns (events, unscheduled):
@@ -150,7 +170,20 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
             events.setdefault(t, []).append(Event(t, int(j), "merger", float("nan"), 0.0, eff,
                                                   f"{r.ratio:g} {r.acquirer} per share", False,
                                                   int(k), float(r.ratio)))
+    if lifecycle is not None and len(lifecycle):
+        # delisted: exit on the first day after the last trade; unknown: after the grace period
+        lc = lifecycle[lifecycle["cls"].isin(["delisted", "unknown"]) & lifecycle["effective_date"].notna()]
+        for r, j in zip(lc.itertuples(index=False), ids.get_indexer(lc["SecurityID"])):
+            eff = pd.Timestamp(r.effective_date)
+            if j < 0 or eff <= first or eff > last:
+                continue
+            t = int(dates.searchsorted(eff, side="left")) + (unknown_grace_days if r.cls == "unknown" else 0)
+            if t < len(dates):
+                events.setdefault(t, []).append(Event(t, int(j), "delisting", float("nan"), 0.0, eff, r.cls,
+                                                      r.cls == "unknown"))
     if ca is None or not len(ca):
+        for t in events:
+            events[t].sort(key=lambda e: (e.j, e.order))
         return events, unscheduled
     col = pd.Index(ids).get_indexer(ca["SecurityID"])
     keep = (col >= 0) & ca["applied"].astype(bool).to_numpy()

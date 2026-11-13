@@ -20,7 +20,7 @@ import pandas as pd
 
 from .account import Account
 from .costs import Charges, CostModel, DPTracker
-from .ledger import Event, LedgerConfig, parse_rights, schedule, split_shares
+from .ledger import Event, LedgerConfig, delisting_value, parse_rights, schedule, split_shares
 
 REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired")
 
@@ -40,10 +40,12 @@ class Market:
     prev_close: np.ndarray     # last traded close before t
     actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
     mergers: pd.DataFrame | None = None   # mergers.load(): parent, effective_date, acquirer, ratio
+    lifecycle: pd.DataFrame | None = None # lifecycle.parquet: delisted / unknown securities exit by policy
 
     @classmethod
     def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20,
-                    actions: pd.DataFrame | None = None, mergers: pd.DataFrame | None = None) -> "Market":
+                    actions: pd.DataFrame | None = None, mergers: pd.DataFrame | None = None,
+                    lifecycle: pd.DataFrame | None = None) -> "Market":
         close = close.sort_index()
         idx, cols = close.index, close.columns
         al = lambda f: f.reindex(index=idx, columns=cols).to_numpy(float)
@@ -53,13 +55,13 @@ class Market:
             adv = turnover.reindex(index=idx, columns=cols).rolling(adv_days, min_periods=adv_days).mean()
         prev = close.ffill().shift(1)
         return cls(idx, cols, al(open_), al(high), al(low), close.to_numpy(float),
-                   adv.to_numpy(float), al(prev), actions, mergers)
+                   adv.to_numpy(float), al(prev), actions, mergers, lifecycle)
 
     @classmethod
     def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None,
-                   mergers: pd.DataFrame | None = None) -> "Market":
+                   mergers: pd.DataFrame | None = None, lifecycle: pd.DataFrame | None = None) -> "Market":
         return cls.from_frames(panel.raw_open, panel.raw_high, panel.raw_low, panel.raw_close,
-                               panel.turnover, adv_days, actions, mergers)
+                               panel.turnover, adv_days, actions, mergers, lifecycle)
 
     def locked(self, t: int, j: int) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
@@ -185,7 +187,8 @@ class Simulator:
         self.dp = DPTracker()
         self.trades, self.rejected, self.unfilled, self.daily = [], [], [], []
         self.costs_today = 0.0
-        self.events, unscheduled = schedule(market.dates, market.ids, market.actions, market.mergers)
+        self.events, unscheduled = schedule(market.dates, market.ids, market.actions, market.mergers,
+                                            market.lifecycle, cfg.ledger.unknown_grace_days)
         self.side_sells: list[Position] = []     # merged shares to sell while the acquirer is also held
         self.unscheduled: dict[int, list] = {}
         for j, ex, kind, detail in unscheduled:
@@ -443,6 +446,8 @@ class Simulator:
             if e.kind == "merger":
                 how = self._merger(t, pos, e)
                 amount, due_t = 0.0, None
+            elif e.kind == "delisting":
+                amount, due_t, how = self._delist(t, pos, e), None, self.cfg.ledger.delisting
             elif e.is_share:
                 self._share_event(pos, e.factor)
                 amount, due_t, how = 0.0, None, "shares"
@@ -518,6 +523,18 @@ class Simulator:
         rest = (ents - n) * per_ent
         self._receivable(pos, rest, due, e)
         return n * issue, due, f"subscribed {n}"
+
+    def _delist(self, t, pos: Position, e: Event) -> float:
+        """Exit a security that stopped trading for good: the delisting policy's share of the last
+        close, credited as cash with no trading charges."""
+        mult = delisting_value(self.cfg.ledger.delisting)
+        px = pos.last_close * mult
+        value = pos.shares * px
+        self.cash += value
+        why ="delisted" if e.detail == "delisted" else f"stopped trading ({self.cfg.ledger.unknown_grace_days}-day grace)"
+        self._record_trade(t, pos, value, 0.0, px, why, self.cfg.ledger.delisting)
+        del self.positions[pos.j]
+        return value
 
     def _scale_levels(self, pos: Position, f: float):
         pos.entry_price *= f

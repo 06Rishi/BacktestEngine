@@ -71,3 +71,5 @@ corporate_actions:
   demerger: receivable           # receivable | table_then_receivable
   demerger_realise_lag_days: 60  # calendar days
   merger: convert_then_sell      # convert_then_sell | convert_and_hold
+  delisting: haircut(50)         # haircut(N) | last_close | zero: share of the last close received
+  unknown_grace_days: 60         # trading days an unexplained stop is held, then treated as delisted
