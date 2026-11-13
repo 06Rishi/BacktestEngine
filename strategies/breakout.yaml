@@ -1,0 +1,14 @@
+# 20-day breakout above the 50-day average on heavy volume; exit on a 10-day low.
+# prior_high/prior_low exclude today, matching the legacy rule's .shift(1) (amendment A2).
+name: breakout
+description: Close above the prior 20-day high and the 50-day average on 1.2x average volume; exit below the prior 10-day low
+universe: nifty500
+params: {hi: 20, lo: 10, trend: 50, vol_mult: 1.2}
+entry:
+  all:
+    - close > prior_high($hi)
+    - close > sma($trend)
+    - volume > $vol_mult * sma(volume, 20)
+exit: close < prior_low($lo)
+rank: volume / sma(volume, 20)
+sizing: equal

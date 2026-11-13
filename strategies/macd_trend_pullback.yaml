@@ -1,0 +1,20 @@
+# MACD trend pullback: buy a MACD turn-up inside an uptrend, on rising volume, when RSI isn't stretched.
+name: macd_trend_pullback
+description: MACD cross-up above the 200-day average with RSI below a ceiling and above-average volume
+universe: nifty500
+params: {rsi_max: 60, vol_mult: 1.5}
+entry:
+  all:
+    - close > sma(200)
+    - macd_cross_up(12, 26, 9)
+    - rsi(14) < $rsi_max
+    - volume > $vol_mult * sma(volume, 20)
+exit:
+  any:
+    - macd_cross_down(12, 26, 9)
+    - close < sma(50)
+rank: roc(63)
+stop_loss: 2 * atr(14)
+take_profit: 3 * atr(14)
+max_hold_days: 20
+sizing: risk_pct(1.0)

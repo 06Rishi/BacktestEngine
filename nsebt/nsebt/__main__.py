@@ -332,9 +332,10 @@ def cmd_strategy(a):
             out = st.generate(Context(p, st.params))
         except spec.SpecError as e:
             sys.exit(f"error: {e}")
-        w = out.warmup.idxmax()
+        warm = out.warmup.any()
+        first = out.warmup.loc[:, warm].idxmax()
         print(f"evaluated on {a.sample} securities: {int(out.entry.to_numpy().sum())} entry signals; "
-              f"earliest warm-up {w.min().date()}")
+              f"{int(warm.sum())} warm, earliest warm-up {first.min().date() if len(first) else 'never'}")
         for n in out.notes:
             if n not in st.lints():
                 print("note:", n)

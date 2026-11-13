@@ -1,0 +1,12 @@
+# 12-1 momentum: hold the top-ranked stocks by the return from 12 months ago to 1 month ago,
+# rebalanced on the last trading day of each month. Stocks that leave the index are not ranked,
+# so they exit at the next rebalance (amendment 2.5). Same strategy as the Python `momentum`.
+name: momentum
+description: Top-N by 12-1 momentum among point-in-time Nifty 500 members, monthly rebalance
+universe: nifty500
+params: {lookback: 252, skip: 21, top_n: 3}
+rebalance: monthly
+entry: rank(momentum_12_1($lookback, $skip)) <= $top_n
+exit: not rank(momentum_12_1($lookback, $skip)) <= $top_n
+rank: momentum_12_1($lookback, $skip)
+sizing: equal
