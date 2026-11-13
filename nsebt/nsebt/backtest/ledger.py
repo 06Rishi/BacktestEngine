@@ -75,10 +75,17 @@ class Event:
     ex_date: pd.Timestamp
     detail: str
     approx: bool            # value is theoretical or price-implied, not a known cash amount
+    to_j: int = -1          # merger: acquirer column (-1 = not in the market)
+    ratio: float = float("nan")   # merger: acquirer shares per parent share
 
     @property
     def is_share(self) -> bool:
         return self.kind in SHARE_KINDS
+
+    @property
+    def order(self) -> int:
+        """Same-day order per security: value events, then share events, then a merger."""
+        return 2 if self.kind == "merger" else 1 if self.is_share else 0
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -120,8 +127,9 @@ def split_shares(shares: int, factor: float) -> tuple[int, float]:
 
 # --------------------------------------------------------------------------- scheduling
 
-def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None):
-    """Map corporate-action rows onto the market calendar.
+def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None,
+             mergers: pd.DataFrame | None = None):
+    """Map corporate-action rows (and merger rows from mergers.load) onto the market calendar.
 
     Returns (events, unscheduled):
       events: {t: [Event, ...]} with value events before share events on the same day
@@ -130,13 +138,24 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None):
     """
     events: dict[int, list[Event]] = {}
     unscheduled: list[tuple] = []
+    first, last = dates[0], dates[-1]
+    ids = pd.Index(ids)
+    if mergers is not None and len(mergers):
+        jj, to = ids.get_indexer(mergers["parent"]), ids.get_indexer(mergers["acquirer"])
+        for r, j, k in zip(mergers.itertuples(index=False), jj, to):
+            eff = pd.Timestamp(r.effective_date)
+            if j < 0 or eff <= first or eff > last:
+                continue
+            t = int(dates.searchsorted(eff, side="left"))
+            events.setdefault(t, []).append(Event(t, int(j), "merger", float("nan"), 0.0, eff,
+                                                  f"{r.ratio:g} {r.acquirer} per share", False,
+                                                  int(k), float(r.ratio)))
     if ca is None or not len(ca):
         return events, unscheduled
     col = pd.Index(ids).get_indexer(ca["SecurityID"])
     keep = (col >= 0) & ca["applied"].astype(bool).to_numpy()
     ca, col = ca[keep], col[keep]
     kinds = set(SHARE_KINDS) | set(VALUE_KINDS)
-    first, last = dates[0], dates[-1]
     for r, j in zip(ca.itertuples(index=False), col):
         if r.kind not in kinds:
             continue
@@ -160,5 +179,5 @@ def schedule(dates: pd.DatetimeIndex, ids: pd.Index, ca: pd.DataFrame | None):
         events.setdefault(t, []).append(Event(t, int(j), r.kind, f, amt, pd.Timestamp(r.ex_date),
                                               str(r.detail), r.kind in APPROX_KINDS))
     for t in events:
-        events[t].sort(key=lambda e: (e.j, e.is_share))     # value events first, per security
+        events[t].sort(key=lambda e: (e.j, e.order))       # value, share, merger: per security
     return events, unscheduled

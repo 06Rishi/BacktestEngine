@@ -188,6 +188,38 @@ def cmd_account(a):
     print(f"saved to {path}: {new.describe()}")
 
 
+def cmd_mergers(a):
+    """Seed mergers.csv with candidates and refresh price-implied ratios of filled rows."""
+    import pandas as pd
+    from .backtest import mergers
+    from .corpactions import load_announcements
+    cfg = _cfg(a)
+    store, path = cfg.path("store"), cfg.root / cfg.raw["paths"].get("mergers", "mergers.csv")
+    table = mergers.read(path)
+    if a.seed:
+        sec = pd.read_parquet(store / "securities.parquet")
+        mem = pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna()
+        cal = pd.DatetimeIndex(pd.read_parquet(store / "prices", columns=["Date"])["Date"].unique())
+        ann = load_announcements(cfg.path("nse_raw") / "corp_actions")
+        before = len(table)
+        table = mergers.merge_seed(table, mergers.candidates(sec, mem, cal, ann))
+        print(f"{len(table) - before} candidate row(s) added")
+    ids = set(table["parent"]) | {x.strip() for x in table["acquirer"] if str(x).strip()}
+    px = pd.read_parquet(store / "prices", columns=["Date", "SecurityID", "Close"],
+                         filters=[("SecurityID", "in", sorted(ids))])
+    close = px.pivot_table(index="Date", columns="SecurityID", values="Close").sort_index()
+    table = mergers.refresh_implied(table, close)
+    table.to_csv(path, index=False)
+    filled = table[table["acquirer"].str.strip() != ""]
+    print(f"{path}: {len(table)} rows, {len(filled)} filled")
+    if a.check and len(filled):
+        r = pd.to_numeric(filled["ratio"].map(mergers._ratio), errors="coerce")
+        im = pd.to_numeric(filled["implied_ratio"], errors="coerce")
+        print(pd.DataFrame({"parent": filled["parent_symbol"], "acquirer": filled["acquirer_symbol"], "ratio": r,
+                            "implied": im, "diff_pct": (im / r - 1) * 100}).round(4).to_string(index=False))
+    mergers.load(path)       # validate
+
+
 # --------------------------------------------------------------------------- research (legacy)
 
 def _legacy_load(a):
@@ -290,6 +322,11 @@ def main(argv=None):
     ac.add_argument("--max-participation-pct", dest="max_participation_pct",
                     help="0.1-100 (% of 20-day average traded value)")
     ac.set_defaults(fn=cmd_account)
+
+    mg = sub.add_parser("mergers", help="seed mergers.csv and check filled ratios against prices")
+    mg.add_argument("--seed", action="store_true", help="add stopped Nifty 500 members and merger announcements")
+    mg.add_argument("--check", action="store_true", help="print each filled ratio next to the price-implied one")
+    mg.set_defaults(fn=cmd_mergers)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")

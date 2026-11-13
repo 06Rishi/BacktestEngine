@@ -39,23 +39,27 @@ class Market:
     adv: np.ndarray            # average daily traded value (₹) over the last `adv_days`, up to and including t
     prev_close: np.ndarray     # last traded close before t
     actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
+    mergers: pd.DataFrame | None = None   # mergers.load(): parent, effective_date, acquirer, ratio
 
     @classmethod
     def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20,
-                    actions: pd.DataFrame | None = None) -> "Market":
+                    actions: pd.DataFrame | None = None, mergers: pd.DataFrame | None = None) -> "Market":
         close = close.sort_index()
         idx, cols = close.index, close.columns
         al = lambda f: f.reindex(index=idx, columns=cols).to_numpy(float)
-        tv = turnover if turnover is not None else close * 0 + np.inf
-        adv = tv.reindex(index=idx, columns=cols).rolling(adv_days, min_periods=adv_days).mean()
+        if turnover is None:        # no turnover given: liquidity never binds
+            adv = pd.DataFrame(np.inf, index=idx, columns=cols)
+        else:
+            adv = turnover.reindex(index=idx, columns=cols).rolling(adv_days, min_periods=adv_days).mean()
         prev = close.ffill().shift(1)
         return cls(idx, cols, al(open_), al(high), al(low), close.to_numpy(float),
-                   adv.to_numpy(float), al(prev), actions)
+                   adv.to_numpy(float), al(prev), actions, mergers)
 
     @classmethod
-    def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None) -> "Market":
+    def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None,
+                   mergers: pd.DataFrame | None = None) -> "Market":
         return cls.from_frames(panel.raw_open, panel.raw_high, panel.raw_low, panel.raw_close,
-                               panel.turnover, adv_days, actions)
+                               panel.turnover, adv_days, actions, mergers)
 
     def locked(self, t: int, j: int) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
@@ -121,6 +125,7 @@ class Position:
     exit_reason: str | None = None   # set when a sell is pending
     exit_signal_t: int | None = None
     trade: dict | None = None        # the trade record, once sold
+    from_j: int | None = None        # original security when the holding came from a merger
 
 
 @dataclass
@@ -180,7 +185,8 @@ class Simulator:
         self.dp = DPTracker()
         self.trades, self.rejected, self.unfilled, self.daily = [], [], [], []
         self.costs_today = 0.0
-        self.events, unscheduled = schedule(market.dates, market.ids, market.actions)
+        self.events, unscheduled = schedule(market.dates, market.ids, market.actions, market.mergers)
+        self.side_sells: list[Position] = []     # merged shares to sell while the acquirer is also held
         self.unscheduled: dict[int, list] = {}
         for j, ex, kind, detail in unscheduled:
             t = int(market.dates.searchsorted(ex))
@@ -197,8 +203,12 @@ class Simulator:
     def _id(self, j):
         return self.m.ids[j]
 
+    def _held(self) -> list[Position]:
+        """Every holding: open positions plus merged shares waiting to be sold."""
+        return list(self.positions.values()) + self.side_sells
+
     def holdings_value(self) -> float:
-        return sum(p.shares * p.last_close for p in self.positions.values())
+        return sum(p.shares * p.last_close for p in self._held())
 
     def receivables_value(self) -> float:
         return sum(r.amount for r in self.receivables)
@@ -219,13 +229,17 @@ class Simulator:
         self.cash += value - ch.total
         self.costs_today += ch.total
         self._record_trade(t, pos, value, ch.total, px, reason, at)
-        del self.positions[pos.j]
+        if self.positions.get(pos.j) is pos:
+            del self.positions[pos.j]
+        elif pos in self.side_sells:
+            self.side_sells.remove(pos)
 
     def _record_trade(self, t, pos: Position, value, sell_charges, px, reason, at):
         gross = value + pos.income - pos.cost_basis
         net = gross - sell_charges - pos.buy_charges.total
         pos.trade = {
-            "SecurityID": self._id(pos.j), "signal_date": self._date(pos.signal_t),
+            "SecurityID": self._id(pos.j if pos.from_j is None else pos.from_j),
+            "exit_security": self._id(pos.j), "signal_date": self._date(pos.signal_t),
             "entry_date": self._date(pos.entry_t), "entry_price": pos.entry_price, "shares": pos.shares,
             "exit_date": self._date(t), "exit_price": px, "exit_at": at, "exit_reason": reason,
             "days_held": t - pos.entry_t, "income": pos.income, "gross_pnl": gross,
@@ -235,7 +249,7 @@ class Simulator:
         self.trades.append(pos.trade)
 
     def _fill_sells(self, t):
-        for pos in [p for p in self.positions.values() if p.exit_reason]:
+        for pos in [p for p in self.positions.values() if p.exit_reason] + list(self.side_sells):
             o = self.m.open[t, pos.j]
             if not np.isfinite(o):
                 self._log_unfilled(t, pos.j, "sell", "not traded")
@@ -331,7 +345,7 @@ class Simulator:
     # ----------------------------------------------------------------- close
     def _mark(self, t):
         self._settle_in_lieu(t)
-        for p in self.positions.values():
+        for p in self._held():
             c = self.m.close[t, p.j]
             if np.isfinite(c):
                 p.last_close = c
@@ -373,7 +387,7 @@ class Simulator:
         slots = self.max_pos - staying - len(self.buys)
         acc, c = self.cfg.account, self.cfg.costs
         proceeds = 0.0
-        for p in self.positions.values():
+        for p in self._held():
             if p.exit_reason:
                 v = p.shares * c.fill_price("sell", p.last_close)
                 proceeds += v - c.order("sell", v, dp=True).total
@@ -393,7 +407,7 @@ class Simulator:
             if value < px:
                 self._reject(t, j, "cap", price=self.m.close[t, j], limit=value)
                 continue
-            liq = self.m.adv[t, j] * acc.max_participation_pct / 100 if np.isfinite(self.m.adv[t, j]) else 0.0
+            liq = 0.0 if np.isnan(self.m.adv[t, j]) else self.m.adv[t, j] * acc.max_participation_pct / 100
             if liq < value:
                 value, reason = liq, "liquidity"
             if value < px:
@@ -426,7 +440,10 @@ class Simulator:
             if pos is None:
                 continue
             before = pos.shares
-            if e.is_share:
+            if e.kind == "merger":
+                how = self._merger(t, pos, e)
+                amount, due_t = 0.0, None
+            elif e.is_share:
                 self._share_event(pos, e.factor)
                 amount, due_t, how = 0.0, None, "shares"
             else:
@@ -502,16 +519,57 @@ class Simulator:
         self._receivable(pos, rest, due, e)
         return n * issue, due, f"subscribed {n}"
 
-    def _share_event(self, pos: Position, f: float):
-        """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""
-        whole, frac = split_shares(pos.shares, f)
-        pos.shares = whole
+    def _scale_levels(self, pos: Position, f: float):
         pos.entry_price *= f
-        pos.last_close *= f
         for name in ("stop", "target", "trail_ref"):
             v = getattr(pos, name)
             if v is not None:
                 setattr(pos, name, v * f)
+
+    def _merger(self, t, pos: Position, e: Event) -> str:
+        """Convert the parent holding into acquirer shares at the scheme ratio. Fractions become cash
+        in lieu at the acquirer's close. convert_then_sell sells at the acquirer's open the same day."""
+        j = pos.j
+        del self.positions[j]
+        if e.to_j < 0:
+            # acquirer not loaded: value the holding at the parent's last close and close it
+            self.warnings.append(f"{self._id(j)}: merged into a security not in the market; "
+                                 f"closed at the last close")
+            self._sell(t, pos, pos.last_close, "merger", "last close (acquirer not loaded)")
+            return "closed at last close"
+        whole, frac = split_shares(pos.shares, 1.0 / e.ratio)
+        self._scale_levels(pos, 1.0 / e.ratio)
+        pc = self.m.prev_close[t, e.to_j]
+        pos.last_close = pc if np.isfinite(pc) else pos.last_close / e.ratio
+        pos.shares, pos.from_j, pos.j = whole, (pos.from_j if pos.from_j is not None else j), e.to_j
+        if frac:
+            self.in_lieu.append((pos, frac))
+        if whole == 0:
+            return "cash in lieu"
+        sell = self.cfg.ledger.merger == "convert_then_sell"
+        held = self.positions.get(e.to_j)
+        if sell and not pos.exit_reason:
+            pos.exit_reason, pos.exit_signal_t = "merger exit", t
+        if held is None:
+            self.positions[e.to_j] = pos
+        elif sell or pos.exit_reason:
+            self.side_sells.append(pos)
+        else:
+            # convert_and_hold into an existing holding: one position, combined cost
+            n = held.shares + whole
+            held.entry_price = (held.entry_price * held.shares + pos.entry_price * whole) / n
+            held.shares, held.cost_basis = n, held.cost_basis + pos.cost_basis
+            held.income += pos.income
+            held.buy_charges = held.buy_charges + pos.buy_charges
+            self.in_lieu = [(held if q is pos else q, f) for q, f in self.in_lieu]
+        return "converted, sold at open" if sell else "converted"
+
+    def _share_event(self, pos: Position, f: float):
+        """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""
+        whole, frac = split_shares(pos.shares, f)
+        pos.shares = whole
+        pos.last_close *= f
+        self._scale_levels(pos, f)
         if frac:
             self.in_lieu.append((pos, frac))
         if whole == 0:
