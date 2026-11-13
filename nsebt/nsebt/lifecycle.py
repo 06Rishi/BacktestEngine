@@ -4,8 +4,8 @@ Every security whose last trade is before the end of the data is classified once
 
   merged     filled row in mergers.csv                          convert (mergers)
   truncated  last trade within 5 trading days of the data end   marked at the last close; not a delisting
-  delisted   on NSE's delisted list (delisted.csv)              exit under the delisting policy
-  suspended  on NSE's suspension list (suspension.csv)          hold at the last close; stops can't fill
+  delisted   on NSE's delisted list (delisted.csv)              held `grace_days`, then the stated value or policy
+  suspended  on NSE's suspension list (suspension.csv)          held `grace_days`, then the stated value or policy
   unknown    none of the above                                  held for `grace_days`, then the delisting policy
 
 `lifecycle_overrides.csv` (manual, every row citing a source) sets the class from NSE notices and

@@ -271,7 +271,7 @@ def cmd_reconcile(a):
     r.preservation.to_csv(out / "phase45_reconciliation_events.csv", index=False)
     bad.to_csv(out / "phase45_reconciliation_table_vs_prices.csv", index=False)
     kinds = r.preservation["kind"].value_counts().to_dict() if len(r.preservation) else {}
-    ok_d = abs(err) < 1e-6 * max(1.0, abs(full.daily["equity"].iloc[-1])) and min_cash > -1e-6
+    ok_d = abs(err) < 1e-6 * max(1.0, abs(full.daily["equity"].iloc[-1]))
     lines = [
         "# Validation: position ledger and corporate-action data (amendment 2.6)", "",
         f"Store version: {store_version(store)}. Universe: every Nifty 500 member 2016-2026 "
@@ -287,7 +287,7 @@ def cmd_reconcile(a):
         f"| (c) Table vs prices: combined factor vs ex-date open and close moves | Independent check of the table "
         f"itself | {len(bad)} of {n_days} member event-days differ by more than 10% on both; listed below |",
         f"| (d) Full ledger run: every member held through all actions, conversions and lifecycle exits | "
-        f"Accounting identity and no negative cash with mergers.csv and lifecycle applied | "
+        f"End-of-run accounting identity with mergers.csv and lifecycle applied (costs off) | "
         f"{'PASS' if ok_d else 'FAIL'}: error {err:.1e}, {len(full.ledger)} ledger events "
         f"({(full.ledger['kind'] == 'merger').sum()} conversions, {(full.ledger['kind'] == 'delisting').sum()} "
         f"lifecycle exits), {len(full.config['warnings'])} warnings |", "",

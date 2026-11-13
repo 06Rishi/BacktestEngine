@@ -66,6 +66,11 @@ def load(path: Path, ids=None) -> pd.DataFrame:
     dup = out[out.duplicated(["parent", "acquirer"])]["parent"]
     if len(dup):
         raise ValueError(f"{Path(path).name}: parent listed twice: {dup.tolist()}")
+    chain = out.merge(out, left_on=["acquirer", "effective_date"], right_on=["parent", "effective_date"])
+    if len(chain):
+        raise ValueError(f"{Path(path).name}: same-day merger chain {chain['parent_x'].tolist()} -> "
+                         f"{chain['acquirer_x'].tolist()} -> {chain['acquirer_y'].tolist()}; give the second merger "
+                         f"its own (later) effective date")
     dates = out.groupby("parent")["effective_date"].nunique()
     if (dates > 1).any():
         raise ValueError(f"{Path(path).name}: components with different dates: {dates[dates > 1].index.tolist()}")

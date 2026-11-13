@@ -3,11 +3,12 @@
 Last updated 2026-11-13.
 
 **Where things stand**
-- Milestones 1 and 2 are complete. Gate A has been reviewed twice: by the user, and by three independent reviewers (architecture, correctness, data).
-- Every finding the user approved fixing is fixed: 7 engine bugs, corporate-action data errors, run schema v2, one market factory, engine-enforced eligibility, and the 60-day grace for stopped securities. See `reports/gateA_report.md`, section 0.
-- **Next step: M3.1**, after the user confirms.
+- Milestones 1–3 are complete.
+- Gate A has been reviewed by the user and by three independent reviewers. Every approved fix is in; see `reports/gateA_report.md`, section 0.
+- Milestone 3 (the strategy layer) was then verified by two more independent reviewers. Every confirmed issue is fixed, with a regression test. See `reports/phase45_progress.md`, line "M3 review fixes".
+- **Next step: M4.1** (TRI fetch or approximate TRI, and baselines).
 
-**Repository:** everything is committed and pushed to `origin/main` (private repo `github.com/06Rishi/BacktestEngine`). 257 of 257 tests pass.
+**Repository:** everything is committed and pushed to `origin/main` (private repo `github.com/06Rishi/BacktestEngine`). 365 of 365 tests pass.
 
 ## 1. Read first, in this order
 
@@ -47,7 +48,7 @@ Last updated 2026-11-13.
 ## 3. Environment
 
 - **Python environment:** Python 3.12 venv via `uv` (`.venv/`). The system Python is 3.14, so always use `.venv/bin/python` / `.venv/bin/pytest`.
-- **Tests:** `.venv/bin/pytest -q` (257 pass, about 7 s). Some tests read the real store and are skipped if it hasn't been built.
+- **Tests:** `.venv/bin/pytest -q` (365 pass, about 35 s; the real-store strategy tests take most of it). Some tests read the real store and are skipped if it hasn't been built.
 - **Data (not in git):**
   - `data/nse/raw`, including:
     - `announcements/`: NSE corporate filings per symbol, cached JSON;
@@ -146,15 +147,42 @@ There are 0 `unknown` Nifty 500 members.
    - The A8 legacy reports are missing.
    - There is no TRI in `indices.parquet`. M4.1 will probe niftyindices.com and fall back to an "approximate TRI".
 
-## 7. Next: Milestone 3 (amendments Part 4)
+## 7. The strategy layer (Milestone 3, `nsebt/nsebt/strategy/`)
 
-| Checkpoint | Scope | Notes |
-|---|---|---|
-| M3.1 | `base.py` Strategy interface (**freezes it**) + registry | A Python strategy runs end to end. Build with `market.from_store(cfg)`; compute signals on the returned panel; pass `warmup`, `dates` and `ids` in `Signals`; pass the strategy source to `run(…, strategy_source=…)`. |
-| M3.2 | `expr.py` tokenizer and parser | Errors give file:line:col. No `eval`. |
-| M3.3 | Evaluation through FeatureCache | A1 warm-up from first-valid rows; A2 `prior_high`/`prior_low` lint; A3 raw vs adjusted lint. |
-| M3.4 | `spec.py` | YAML schema, `params`, `--set` overrides |
-| M3.5 | The three example strategies | YAML and Python momentum must produce identical trades. |
+| Module | Role |
+|---|---|
+| `base.py` | **Frozen interface.** `Strategy.generate(Context) -> Output` (entry, exit, score, stop/target/trail as fractions of the close fixed at entry, warmup, max hold, sizing, notes). `to_signals` aligns by label. `rank_desc`, `rebalance_days` (the last row counts only if the next business day starts a new period). |
+| `expr.py` | Tokenizer and recursive-descent parser, no `eval`. Errors carry file:line:col. `shift(x, n)` needs n ≥ 1. |
+| `evaluate.py` | Evaluation through the FeatureCache, the A1 warm-up, and the A2/A3 lints. See its docstring for names and functions. |
+| `spec.py` | The YAML schema, `params` and `--set`, `rebalance`, sizing, and a dry run on a synthetic panel. |
+| `library.py` | Python reference strategies (`momentum`). |
+| `runner.py` | `backtest(cfg, strategy, start, end)`: computes signals on the full history and runs a `Market.slice` window. **It refuses to include the holdout (`research.holdout_start`, 2022-01-01) until M4.3's `--final` exists.** |
+
+**Reference strategies** are in `strategies/`: `macd_trend_pullback.yaml`, `breakout.yaml` and `momentum.yaml`, plus Python `momentum`. The YAML and Python momentum give identical trades. Check a strategy with `nsebt strategy check <file> [--set k=v] [--sample N]`.
+
+**Language rules** (settled by the review):
+- `and`, `or` and `not` take conditions only, never numbers.
+- A condition is true only where its data is defined. Missing data never satisfies `not` or `or`.
+- Arithmetic on conditions is an error.
+- Warm-up comes from entry, rank and stop/target/trail expressions; exits don't delay entries.
+- Stop, target and trail are price distances; a constant one is linted.
+- A YAML `[a, b]` list splits at commas, so quote expressions that contain them, or use a `- ` list.
+
+**Known and documented, not changed:**
+- Cash can dip slightly below zero when a tiny residual order (1 share) is sold below its fixed ₹15.34 DP charge. A broker debits the same, and no buy is placed without cash.
+- Ties at the `top_n` cut-off are settled by the engine's seeded tie-break.
+- Momentum sells a held stock that is no longer ranked: removed from the index (2.5), or not traded on the rebalance day while its momentum is still defined.
+
+## 7b. Next: Milestone 4
+
+| Checkpoint | Scope |
+|---|---|
+| M4.1 | TRI fetch (or an approximate TRI) and `baselines.py` (A12). For random-3, reuse the engine's per-security hold paths instead of writing a second ledger. |
+| M4.2 | `metrics.py` and `ranges.py` |
+| M4.3 | `ledger.py`, the holdout lock and the seed rows (A8). Replaces the runner's interim refusal. |
+| M4.4 | Placebos (A9), block bootstrap, slippage sensitivity |
+| M4.5 | Walk-forward (use `Market.slice`), sweep, island warning, deflated Sharpe |
+| M4.6 | `tax.py` (A13) |
 
 ## 8. Decisions recorded with the user
 

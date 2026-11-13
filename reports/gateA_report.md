@@ -136,13 +136,12 @@ Mutation tests confirm (a) fails when an event is dropped, a factor is reversed 
   - The receivable turns into cash after 30 calendar days (dividends), 15 trading days (rights) or 60 calendar days (demergers).
   - Value events are applied before share events on the same day, on the pre-event share count.
 - **Mergers:** conversion at the scheme ratio from `mergers.csv` on the first trading day after the parent's last trade. The default is to sell at the acquirer's open that day; `convert_and_hold` is the alternative.
-- **Stopped securities:** classified in `data/store/lifecycle.parquet` with `nsebt lifecycle [--fetch]`.
+- **Stopped securities:** classified in `data/store/lifecycle.parquet`, rebuilt by `nsebt build` and the daily update (updated after the review).
 
   | Class | Treatment |
   |---|---|
-  | Delisted | Exit at 50% of the last close (`haircut(50)`). Also available: `last_close`, `zero`. |
-  | Unknown | Held for 60 trading days, then treated as delisted. |
-  | Suspended, truncated | Held at the last close. |
+  | Delisted, suspended (never resumed), unknown | Held 60 trading days (`grace_days`), then exit at the stated value or under the delisting policy (`haircut(50)`; also `last_close`, `zero`) |
+  | Truncated (stopped within 5 days of the data end) | Held at the last close |
 
 - **Eligibility (A4):** one shared function covering membership, a trade on the day, warm-up, raw close ≥ ₹10 and 20-session average traded value ≥ ₹1 crore. The simulator's liquidity limit uses the same average. By default (`hold`), removal from the index does not force an exit.
 

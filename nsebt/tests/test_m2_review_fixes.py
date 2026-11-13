@@ -186,3 +186,47 @@ def test_equity_equals_capital_plus_realised_and_unrealised(seed):
     realised = r.trades["net_pnl"].sum() if len(r.trades) else 0.0
     assert r.daily["equity"].iloc[-1] - 200_000 == pytest.approx(realised + unreal, abs=1e-6)
     assert (r.daily["cash"] > -1e-6).all()
+
+
+# --------------------------------------------------------------------------- second review
+
+def test_merger_with_cash_keeps_stops_where_they_were_in_value_terms():
+    # A at 100 with a 5% stop (95) -> 1 B + Rs 10 cash; B trades flat at 90: nothing moved, no exit
+    m = merge(market({"A": [100] * 4 + [None] * 4, "B": [90] * 8}), 4, "A", [("B", 1.0)], cash=10.0)
+    c = cfg()
+    c.ledger = LedgerConfig(merger="convert_and_hold")
+    stop = np.full(m.close.shape, 0.05)
+    sim = Simulator(m, sig(m, entries=[(0, 0)], sizing=Sizing("fixed", 1000.0), stop=stop), c)
+    r = sim.run()
+    assert r.trades.empty
+    assert sim.positions[1].stop == pytest.approx(95 * 90 / 100)       # 85.5: the same 5% below the value
+
+
+def test_rights_subscription_comes_after_the_days_other_value_events():
+    # 10 shares; rights 1:5 @ 50 and a Rs 2 per share arrangement the same day: arrangement on 10 shares
+    m = market({"A": [100] * 3 + [90] * 4})
+    m.actions = ca(m, [("A", 3, "rights", 550 / 600, "1:5 @ 50", 100.0), ("A", 3, "arrangement", 0.98, "Demerger", 100.0)])
+    _, r = go(m, entries=[(0, 0)], rights="subscribe")
+    lg = r.ledger.set_index("kind")
+    assert lg.loc["arrangement", "amount"] == pytest.approx(20) and lg.loc["arrangement", "shares_before"] == 10
+    assert lg.loc["rights", "shares_after"] == 12
+
+
+def test_same_day_merger_chains_are_rejected(tmp_path):
+    from nsebt.backtest import mergers
+    rows = [{c: "" for c in mergers.COLUMNS} for _ in range(2)]
+    rows[0].update(parent="A", effective_date="2024-01-08", acquirer="B", ratio="1")
+    rows[1].update(parent="B", effective_date="2024-01-08", acquirer="C", ratio="2")
+    p = tmp_path / "m.csv"
+    pd.DataFrame(rows).to_csv(p, index=False)
+    with pytest.raises(ValueError, match="same-day merger chain"):
+        mergers.load(p)
+
+
+def test_run_hash_covers_market_arrays_when_not_built_from_the_store():
+    from nsebt.backtest import run as R
+    a = market({"A": [100] * 5, "B": [50] * 5})
+    b = market({"A": [100] * 5, "B": [51] * 5})
+    s = sig(a, entries=[(0, 0)])
+    assert R.run(a, s, cfg()).record.config_hash != R.run(b, s, cfg()).record.config_hash
+    assert R.run(a, s, cfg()).record.config_hash == R.run(a, s, cfg()).record.config_hash

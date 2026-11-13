@@ -124,6 +124,20 @@ def signals_hash(signals: Signals) -> str:
     return h.hexdigest()[:16]
 
 
+def market_hash(market: Market) -> str:
+    """Hash of a market's labels, prices and membership (used when it was not built from the store,
+    whose input files are hashed instead)."""
+    h = hashlib.sha256()
+    h.update("|".join(map(str, market.ids)).encode() + "|".join(map(str, market.dates)).encode())
+    for a in (market.open, market.high, market.low, market.close, market.adv, market.members):
+        if a is not None:
+            h.update(np.ascontiguousarray(a).tobytes())
+    for f in (market.actions, market.mergers, market.lifecycle):
+        if f is not None and len(f):
+            h.update(pd.util.hash_pandas_object(f.astype(str), index=False).to_numpy().tobytes())
+    return h.hexdigest()[:16]
+
+
 def source_hash(source) -> str:
     if source is None:
         return "none"
@@ -143,13 +157,13 @@ def resolve(signals: Signals, cfg: SimConfig, market: Market, strategy: str = "u
         "sim": {"buy_order_ttl_days": cfg.buy_order_ttl_days, "max_hold_days": signals.max_hold_days,
                 "sizing": asdict(signals.sizing), "strategy_max_positions": signals.max_positions,
                 "ledger": asdict(cfg.ledger), "eligibility": asdict(cfg.eligibility),
-                "market_adv_days": market.adv_days},
+                "market_adv_days": market.adv_days, "reconcile": cfg.reconcile},
         "universe": universe,
         "start": market.dates[0].date().isoformat(),
         "end": market.dates[-1].date().isoformat(),
         "seed": cfg.seed,
         "store_version": store_version(store),
-        "data_inputs": dict(market.sources) or ({"note": "market not built by market.from_store"}),
+        "data_inputs": dict(market.sources) or {"market_arrays": market_hash(market)},
         "signals_hash": signals_hash(signals),
         "strategy_source_hash": source_hash(strategy_source),
     }

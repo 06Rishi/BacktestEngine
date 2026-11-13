@@ -21,8 +21,9 @@ What each check proves, and what it does not:
 
 (d) Full ledger run. Every member is held from listing through its splits, dividends, rights,
     demergers, conversions (mergers.csv) and lifecycle exits (delisted, suspended), with real
-    acquirer prices. Equity must equal capital plus realised and unrealised P&L to 1e-6, cash must
-    never go negative, and every warning is listed.
+    acquirer prices, costs off. At the end of the run, equity must equal capital plus realised and
+    unrealised P&L to 1e-6; every warning is listed. (Daily identity, costs and negative-cash
+    behaviour are covered by the randomised tests in test_m2_review_fixes.py.)
 
 Why (a) and not the receivable engine against the adjusted series directly: the adjusted series
 reinvests each dividend at the ex-date price, while the engine holds it as cash. The two differ by

@@ -41,7 +41,7 @@ class Market:
     prev_close: np.ndarray     # last traded close before t
     actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
     mergers: pd.DataFrame | None = None   # mergers.load(): parent, effective_date, acquirer, ratio
-    lifecycle: pd.DataFrame | None = None # lifecycle.parquet: delisted / unknown securities exit by policy
+    lifecycle: pd.DataFrame | None = None # lifecycle.parquet: delisted / suspended / unknown exit after the grace
     members: np.ndarray | None = None     # bool (D, N) point-in-time membership (eligibility, universe exit)
     adv_days: int = 20                    # window of `adv`; must equal the eligibility config's adv_days
     sources: dict = field(default_factory=dict)   # input files and their hashes (Market.from_store)
@@ -541,8 +541,10 @@ class Simulator:
         # order: value and share events, then mergers (shares received today are not entitled to the
         # acquirer's own events today), then delistings (which also reach shares converted today)
         todays = self.events.get(t, ())
-        rank = {"merger": 1, "delisting": 2}
-        for e in sorted(todays, key=lambda x: rank.get(x.kind, 0)):
+        # rights (a subscription adds shares) after the other value events, then share events
+        rank = lambda x: 3 if x.kind == "delisting" else 2 if x.kind == "merger" else 1 if x.is_share else \
+            0.5 if x.kind == "rights" else 0
+        for e in sorted(todays, key=rank):
             for pos in [p for p in self._held() if p.j == e.j]:
                 self._apply(t, e, pos)
 
@@ -709,7 +711,10 @@ class Simulator:
             q.buy_charges = Charges(*(getattr(charges, f) * wi for f in
                                       ("brokerage", "stt", "transaction", "sebi", "gst", "stamp", "dp")))
             if i == 0 and len(parts) == 1:
-                self._scale_levels(q, 1.0 / r)
+                # parent levels map onto the acquirer's price; a cash part takes its share of the value
+                px = q.last_close
+                f = (1.0 / r) * (r * px / (r * px + e.cash)) if e.cash and r * px + e.cash > 0 else 1.0 / r
+                self._scale_levels(q, f)
             else:                    # price levels don't carry over to a basket: entry at allocated cost, no stop
                 q.stop = q.target = q.trail_frac = q.trail_ref = None
                 q.entry_price = q.cost_basis / whole if whole else 0.0
@@ -770,7 +775,8 @@ class Simulator:
                 tr["income"] += amount
                 tr["gross_pnl"] += amount
                 tr["net_pnl"] += amount
-                tr["return"] = tr["net_pnl"] / (pos.cost_basis + pos.buy_charges.total)
+                basis = pos.cost_basis + pos.buy_charges.total
+                tr["return"] = tr["net_pnl"] / basis if basis else float("nan")
             elif pos.shares == 0:              # the whole holding was a fraction
                 pos.income += amount
                 self._record_trade(t, pos, 0.0, 0.0, px, "corporate action", "cash in lieu")
