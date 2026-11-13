@@ -84,3 +84,6 @@ eligibility:
   min_adv: 10000000.0            # ₹ 1 crore, average traded value
   adv_days: 20                   # sessions in the average (a session with no trade counts as zero)
   on_universe_exit: hold         # hold | sell
+
+research:
+  holdout_start: 2022-01-01      # 2022 onward is out-of-sample; locked until a run passes --final (A8, M4.3)

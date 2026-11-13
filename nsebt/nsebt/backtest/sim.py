@@ -70,6 +70,19 @@ class Market:
             m.members = panel.members.reindex(index=m.dates, columns=m.ids).fillna(False).to_numpy(bool)
         return m
 
+    def slice(self, start=None, end=None) -> "Market":
+        """Rows from `start` to `end` (inclusive). `adv` and `prev_close` keep the values computed on
+        the full history, so the first days of a window are not starved of liquidity history.
+        Corporate actions, mergers and lifecycle stay attached (scheduling filters by date)."""
+        a = 0 if start is None else int(self.dates.searchsorted(pd.Timestamp(start), side="left"))
+        b = len(self.dates) if end is None else int(self.dates.searchsorted(pd.Timestamp(end), side="right"))
+        if b - a < 2:
+            raise ValueError("Market.slice: the window needs at least 2 trading days")
+        cut = lambda x: None if x is None else x[a:b]
+        return Market(self.dates[a:b], self.ids, cut(self.open), cut(self.high), cut(self.low), cut(self.close),
+                      cut(self.adv), cut(self.prev_close), self.actions, self.mergers, self.lifecycle,
+                      cut(self.members), self.adv_days, dict(self.sources))
+
     def locked(self, t: int, j: int, prev: float | None = None) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
         the previous close: likely locked at a circuit limit. `prev` overrides the previous close
