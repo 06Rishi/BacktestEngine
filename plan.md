@@ -25,7 +25,7 @@ A local research platform for swing trading NSE equities on daily data. It:
 | 2 | Daily NSE pipeline | Done | `README.md`, `reports/runs/` |
 | 3 | Indicator and feature library | Done | `reports/phase3_report.md` |
 | 4 | Strategy definitions | In progress | — |
-| 5 | Backtesting engine | In progress | — |
+| 5 | Backtesting engine | M1–M2 done; awaiting Gate A approval | `reports/gateA_report.md` |
 | 6 | Interactive app | Planned | — |
 | 7 | Daily scanner | Planned | — |
 
