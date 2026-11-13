@@ -20,6 +20,7 @@ import pandas as pd
 
 from .account import Account
 from .costs import Charges, CostModel, DPTracker
+from .ledger import LedgerConfig, schedule, split_shares
 
 REASONS_REJECT = ("no slot", "no cash", "cap", "liquidity", "gap", "no stop", "expired")
 
@@ -37,9 +38,11 @@ class Market:
     close: np.ndarray
     adv: np.ndarray            # average daily traded value (₹) over the last `adv_days`, up to and including t
     prev_close: np.ndarray     # last traded close before t
+    actions: pd.DataFrame | None = None   # corporate_actions.parquet rows (applied on effective dates)
 
     @classmethod
-    def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20) -> "Market":
+    def from_frames(cls, open_, high, low, close, turnover=None, adv_days: int = 20,
+                    actions: pd.DataFrame | None = None) -> "Market":
         close = close.sort_index()
         idx, cols = close.index, close.columns
         al = lambda f: f.reindex(index=idx, columns=cols).to_numpy(float)
@@ -47,12 +50,12 @@ class Market:
         adv = tv.reindex(index=idx, columns=cols).rolling(adv_days, min_periods=adv_days).mean()
         prev = close.ffill().shift(1)
         return cls(idx, cols, al(open_), al(high), al(low), close.to_numpy(float),
-                   adv.to_numpy(float), al(prev))
+                   adv.to_numpy(float), al(prev), actions)
 
     @classmethod
-    def from_panel(cls, panel, adv_days: int = 20) -> "Market":
+    def from_panel(cls, panel, adv_days: int = 20, actions: pd.DataFrame | None = None) -> "Market":
         return cls.from_frames(panel.raw_open, panel.raw_high, panel.raw_low, panel.raw_close,
-                               panel.turnover, adv_days)
+                               panel.turnover, adv_days, actions)
 
     def locked(self, t: int, j: int) -> str | None:
         """'up' / 'down' when the bar is a single price (open = high = low = close) away from
@@ -94,6 +97,7 @@ class SimConfig:
     costs: CostModel = field(default_factory=CostModel)
     seed: int = 0
     buy_order_ttl_days: int = 1                 # unfilled buys are cancelled after this many days
+    ledger: LedgerConfig = field(default_factory=LedgerConfig)
     # unfilled sells (not traded, locked at the lower circuit) retry every day until filled
 
 
@@ -105,8 +109,10 @@ class Position:
     shares: int
     entry_t: int
     signal_t: int
-    entry_price: float          # fill price including slippage
+    entry_price: float          # fill price including slippage (× factor after share events)
     buy_charges: Charges
+    cost_basis: float = 0.0     # ₹ paid for the shares, excluding charges; unchanged by share events
+    income: float = 0.0         # ₹ credited by corporate actions (cash in lieu, receivables)
     stop: float | None = None
     target: float | None = None
     trail_frac: float | None = None
@@ -114,6 +120,7 @@ class Position:
     last_close: float = float("nan")
     exit_reason: str | None = None   # set when a sell is pending
     exit_signal_t: int | None = None
+    trade: dict | None = None        # the trade record, once sold
 
 
 @dataclass
@@ -163,6 +170,13 @@ class Simulator:
         self.dp = DPTracker()
         self.trades, self.rejected, self.unfilled, self.daily = [], [], [], []
         self.costs_today = 0.0
+        self.events, unscheduled = schedule(market.dates, market.ids, market.actions)
+        self.unscheduled: dict[int, list] = {}
+        for j, ex, kind, detail in unscheduled:
+            t = int(market.dates.searchsorted(ex))
+            if 0 < t < D:
+                self.unscheduled.setdefault(t, []).append((j, ex, kind, detail))
+        self.in_lieu: list[tuple[Position, float]] = []   # fractional shares, paid at the ex-date close
 
     # ----------------------------------------------------------------- helpers
     def _date(self, t):
@@ -188,17 +202,21 @@ class Simulator:
         ch = c.order("sell", value, dp=self.dp.due(t, pos.j))
         self.cash += value - ch.total
         self.costs_today += ch.total
-        cost = pos.shares * pos.entry_price
-        net = value - ch.total - cost - pos.buy_charges.total
-        self.trades.append({
+        self._record_trade(t, pos, value, ch.total, px, reason, at)
+        del self.positions[pos.j]
+
+    def _record_trade(self, t, pos: Position, value, sell_charges, px, reason, at):
+        gross = value + pos.income - pos.cost_basis
+        net = gross - sell_charges - pos.buy_charges.total
+        pos.trade = {
             "SecurityID": self._id(pos.j), "signal_date": self._date(pos.signal_t),
             "entry_date": self._date(pos.entry_t), "entry_price": pos.entry_price, "shares": pos.shares,
             "exit_date": self._date(t), "exit_price": px, "exit_at": at, "exit_reason": reason,
-            "days_held": t - pos.entry_t, "gross_pnl": value - cost,
-            "costs": ch.total + pos.buy_charges.total, "net_pnl": net,
-            "return": net / (cost + pos.buy_charges.total),
-        })
-        del self.positions[pos.j]
+            "days_held": t - pos.entry_t, "income": pos.income, "gross_pnl": gross,
+            "costs": sell_charges + pos.buy_charges.total, "net_pnl": net,
+            "return": net / (pos.cost_basis + pos.buy_charges.total),
+        }
+        self.trades.append(pos.trade)
 
     def _fill_sells(self, t):
         for pos in [p for p in self.positions.values() if p.exit_reason]:
@@ -250,6 +268,7 @@ class Simulator:
             self.cash -= shares * px + ch.total
             self.costs_today += ch.total
             pos = Position(j=j, shares=shares, entry_t=t, signal_t=o.signal_t, entry_price=px, buy_charges=ch,
+                           cost_basis=shares * px,
                            stop=px * (1 - o.stop_frac) if o.stop_frac is not None else None,
                            target=px * (1 + o.target_frac) if o.target_frac is not None else None,
                            trail_frac=o.trail_frac, last_close=op)
@@ -295,6 +314,7 @@ class Simulator:
 
     # ----------------------------------------------------------------- close
     def _mark(self, t):
+        self._settle_in_lieu(t)
         for p in self.positions.values():
             c = self.m.close[t, p.j]
             if np.isfinite(c):
@@ -375,9 +395,54 @@ class Simulator:
             budget -= value
             slots -= 1
 
-    # ----------------------------------------------------------------- hooks (M2)
+    # ----------------------------------------------------------------- corporate actions
     def _corporate_actions(self, t):
-        pass
+        for j, ex, kind, detail in self.unscheduled.get(t, ()):
+            if j in self.positions:
+                self.warnings.append(f"{self._id(j)}: {kind} ({detail}) ex {ex.date()} has no effective date "
+                                     f"in the store; not applied to the open position")
+        for e in self.events.get(t, ()):
+            pos = self.positions.get(e.j)
+            if pos is None:
+                continue
+            if e.is_share:
+                self._share_event(pos, e.factor)
+
+    def _share_event(self, pos: Position, f: float):
+        """Split, bonus or consolidation: shares ÷ f, price levels × f; fractions become cash in lieu."""
+        whole, frac = split_shares(pos.shares, f)
+        pos.shares = whole
+        pos.entry_price *= f
+        pos.last_close *= f
+        for name in ("stop", "target", "trail_ref"):
+            v = getattr(pos, name)
+            if v is not None:
+                setattr(pos, name, v * f)
+        if frac:
+            self.in_lieu.append((pos, frac))
+        if whole == 0:
+            # a consolidation left less than one share: the holding becomes cash in lieu
+            del self.positions[pos.j]
+
+    def _settle_in_lieu(self, t):
+        """Pay fractional entitlements at the ex-date raw close."""
+        for pos, frac in self.in_lieu:
+            c = self.m.close[t, pos.j]
+            px = c if np.isfinite(c) else pos.last_close
+            amount = frac * px
+            self.cash += amount
+            if pos.trade is not None:          # sold earlier today: add to that trade
+                tr = pos.trade
+                tr["income"] += amount
+                tr["gross_pnl"] += amount
+                tr["net_pnl"] += amount
+                tr["return"] = tr["net_pnl"] / (pos.cost_basis + pos.buy_charges.total)
+            elif pos.shares == 0:              # the whole holding was a fraction
+                pos.income += amount
+                self._record_trade(t, pos, 0.0, 0.0, px, "corporate action", "cash in lieu")
+            else:
+                pos.income += amount
+        self.in_lieu = []
 
     # ----------------------------------------------------------------- run
     def run(self) -> Result:

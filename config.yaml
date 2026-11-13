@@ -59,3 +59,13 @@ costs:
   dp_per_scrip_sell_day: 15.34   # ₹ once per stock per sell day
   slippage_bps_buy: 10.0         # moves the fill price
   slippage_bps_sell: 10.0
+
+corporate_actions:
+  # Position ledger (amendments 2.3). Signals never read it; it changes P&L and cash timing only.
+  dividends: receivable          # receivable | instant | ignore
+  dividend_pay_lag_days: 30      # calendar days (Companies Act limit for paying a declared dividend)
+  rights: sell_entitlement       # sell_entitlement | subscribe | ignore
+  rights_realise_lag_days: 15    # trading days (about the entitlement trading window)
+  demerger: receivable           # receivable | table_then_receivable
+  demerger_realise_lag_days: 60  # calendar days
+  merger: convert_then_sell      # convert_then_sell | convert_and_hold

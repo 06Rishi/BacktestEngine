@@ -11,7 +11,7 @@ FREE = CostModel(stt_pct=0, transaction_pct=0, sebi_per_crore=0, gst_pct=0, stam
 BIG = 1e12
 
 
-def market(bars: dict, turnover=None, days=None):
+def market(bars: dict, turnover=None, days=None, actions=None):
     """bars: {id: [(o, h, l, c) or c or None, ...]}. A bare number c is the bar
     (c, 1.01c, 0.99c, c): a normal day, not a locked circuit."""
     n = len(next(iter(bars.values())))
@@ -29,7 +29,7 @@ def market(bars: dict, turnover=None, days=None):
                 f[key][sid].append(v)
     fr = {k: pd.DataFrame(v, index=idx) for k, v in f.items()}
     tv = pd.DataFrame(BIG, index=idx, columns=fr["c"].columns) if turnover is None else turnover
-    return Market.from_frames(fr["o"], fr["h"], fr["l"], fr["c"], tv, adv_days=1)
+    return Market.from_frames(fr["o"], fr["h"], fr["l"], fr["c"], tv, adv_days=1, actions=actions)
 
 
 def sig(m, entries=(), exits=(), score=None, **kw):
@@ -47,3 +47,22 @@ def cfg(capital=30_000, n=3, cap=33.0, part=100.0, costs=FREE, **kw):
                                      max_participation_pct=part), costs=costs, **kw)
 
 
+
+
+def ca(m, rows):
+    """Corporate-action rows: (security, day index, kind, factor[, detail[, prior_close]]).
+    The ex-date and effective date are both the market date at that index."""
+    out = []
+    for r in rows:
+        sid, t, kind, f = r[:4]
+        detail = r[4] if len(r) > 4 else ""
+        pc = r[5] if len(r) > 5 else np.nan
+        d = m.dates[t] if t is not None else pd.Timestamp("2099-01-01")
+        out.append({"SecurityID": sid, "ex_date": d, "effective_date": d if t is not None else pd.NaT,
+                    "kind": kind, "factor": f, "detail": detail, "applied": True, "prior_close": pc})
+    return pd.DataFrame(out)
+
+
+def with_actions(m, rows):
+    m.actions = ca(m, rows)
+    return m
