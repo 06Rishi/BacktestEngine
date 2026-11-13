@@ -309,6 +309,38 @@ def cmd_reconcile(a):
         sys.exit(1)
 
 
+def cmd_strategy(a):
+    """Check a YAML strategy: schema, names, parameters and lints; then evaluate it on a sample."""
+    from .strategy import spec
+    try:
+        st = spec.load(a.file, spec.parse_sets(a.set))
+    except spec.SpecError as e:
+        sys.exit(f"error: {e}")
+    print(f"{st.name}: {len(st.parsed())} expression(s), params {st.params}, rebalance {st.rebalance}, "
+          f"sizing {st.sizing.mode}{'' if st.sizing.value is None else f'({st.sizing.value:g})'}")
+    for w in st.lints():
+        print(w)
+    if a.sample:
+        import pandas as pd
+        from .data import load_panel
+        from .strategy import Context
+        cfg = _cfg(a)
+        store = cfg.path("store")
+        mem = pd.read_parquet(store / "membership.parquet")["SecurityID"].dropna().unique()
+        p = load_panel(store, sorted(mem)[: a.sample], end=cfg.raw.get("research", {}).get("holdout_start"))
+        try:
+            out = st.generate(Context(p, st.params))
+        except spec.SpecError as e:
+            sys.exit(f"error: {e}")
+        w = out.warmup.idxmax()
+        print(f"evaluated on {a.sample} securities: {int(out.entry.to_numpy().sum())} entry signals; "
+              f"earliest warm-up {w.min().date()}")
+        for n in out.notes:
+            if n not in st.lints():
+                print("note:", n)
+    print("ok")
+
+
 # --------------------------------------------------------------------------- research (legacy)
 
 def _legacy_load(a):
@@ -423,6 +455,15 @@ def main(argv=None):
 
     rc_ = sub.add_parser("reconcile", help="reconcile the position ledger with adjusted prices (all securities)")
     rc_.set_defaults(fn=cmd_reconcile)
+
+    stp = sub.add_parser("strategy", help="strategy tools")
+    stsub = stp.add_subparsers(dest="strategy_cmd", required=True)
+    chk = stsub.add_parser("check", help="validate a YAML strategy (schema, names, params, lints)")
+    chk.add_argument("file")
+    chk.add_argument("--set", action="append", metavar="NAME=VALUE", help="override a declared parameter")
+    chk.add_argument("--sample", type=int, default=0, metavar="N",
+                     help="also evaluate it on N securities from the store (before the holdout)")
+    chk.set_defaults(fn=cmd_strategy)
 
     b = sub.add_parser("backup", help="back up everything that cannot be rebuilt")
     b.add_argument("--dest", type=Path, help="default: backup.destinations in config.yaml")
